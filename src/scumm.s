@@ -112,7 +112,9 @@ SCR_SENT         =     2              ; and the one that runs sentences
 SCR_ENTRA        =     5              ; the one that runs on entering a room
 
 *----- memory ----------------------------------------------------------
-RAWSIZE          =     27136          ; the biggest .LFL is 25510
+RAWSIZE          =     41472          ; the biggest .LFL: 25510 on DOS,
+*                                        but 40861 in the Amiga release,
+*                                        whose rooms carry more picture
 PIXSIZE          =     65536          ; 960*128 at half a byte = 61440
 SLOTS            =     12             ; scripts at once
 SLOTLEN          =     $0C00          ; 3072 bytes per script (the

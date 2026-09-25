@@ -18,6 +18,11 @@ the verb panel and the inventory, the sentence line, dialogue with the mouth mov
 scrolling rooms with the camera following, dark rooms with the flashlight, and saving
 and loading through the game's own save screen.
 
+The Amiga release works too, from files taken off its own floppies with
+`tools/adf.py`: same index, byte-identical bytecode, and the same picture decoder
+reads its rooms. Its room files are half again as large, which is all the engine
+needed to be told.
+
 Still missing: sound and music, and a few opcodes the game has not needed yet.
 Zak McKracken has not been tried.
 
@@ -80,6 +85,7 @@ understand the data and to find mistakes in seconds instead of one disk at a tim
 | `prova.py` | drives the game inside that emulator — clicks, keys, screenshots |
 | `font_orig.py` | the font drawn for this project, and where it is designed |
 | `font_mm.py` | lifts the game's own font out of `MANIAC.EXE` instead |
+| `adf.py` | reads files out of an Amiga floppy image, for the Amiga release |
 
 The emulator is the reason this got anywhere. It boots the real interpreter, feeds it
 the real game files, lets a test click on things and hands back the video memory as a
