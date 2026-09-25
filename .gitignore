@@ -3,7 +3,6 @@ data/
 *.LFL
 *.2mg
 src/fontdata.s
-tools/font_mm.bin
 
 build/
 stage/

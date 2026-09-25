@@ -29,7 +29,6 @@ You need:
   cross-assembler, from Brutal Deluxe
 - **[Cadius](https://github.com/mach-kernel/cadius)** — to build the ProDOS disk image
 - your own copy of the game's `.LFL` files, in a folder (default: `data/`)
-- `src/fontdata.s` — see below
 
 ```sh
 ./build_scumm.sh /path/to/your/LFL/files
@@ -42,13 +41,26 @@ the game's own files. It boots on a real IIGS (ROM01 and ROM03) and under
 ### The font
 
 SCUMM V2 keeps no font in the `.LFL` files: on DOS it lives inside the game's
-executable. `src/fontdata.s` is therefore game data, and it is not distributed here.
+executable, which makes it game data like everything else.
 
-The layout, if you want to build it yourself: 128 characters, 8x8, one bit per pixel,
-eight bytes each. In `MANIAC.EXE` the table starts at file offset `$108FD` and covers
-the characters from 48 upwards (digits, letters, symbols); below 48 the same area is
-x86 code, not a table, so punctuation has to come from somewhere else. The file is a
-Merlin32 source with the label `FontData` followed by `hex` lines.
+So this repository carries a font drawn for the project instead — 5x7 shapes in an
+8x8 cell, `src/font_orig.s`, written by `tools/font_orig.py`, which is where the
+letters are actually designed (one string of ones and zeros per row, easy to read
+and to change). The build uses it automatically, so a fresh clone runs.
+
+If you would rather see the game's own lettering, `tools/font_mm.py` lifts it out of
+your `MANIAC.EXE`:
+
+```sh
+python3 tools/font_mm.py /path/to/MANIAC.EXE > src/fontdata.s
+```
+
+`src/fontdata.s` takes precedence over the drawn font when it exists, and
+`.gitignore` keeps it out of the repository. The table in the executable starts at
+file offset `$108FD` and begins at character 48, the digit zero; below that the same
+area is x86 code rather than glyphs, so the script fills the space and the
+punctuation from the drawn font. Either way the format is the same: 128 characters,
+eight bytes each, one byte per row, leftmost pixel in bit 7.
 
 ## The tools
 
@@ -66,6 +78,8 @@ understand the data and to find mistakes in seconds instead of one disk at a tim
 | `gs816.py` | a 65816 in Python: enough of a IIGS to run the interpreter |
 | `gsrun.py` | fakes the toolbox and GS/OS on top of it |
 | `prova.py` | drives the game inside that emulator — clicks, keys, screenshots |
+| `font_orig.py` | the font drawn for this project, and where it is designed |
+| `font_mm.py` | lifts the game's own font out of `MANIAC.EXE` instead |
 
 The emulator is the reason this got anywhere. It boots the real interpreter, feeds it
 the real game files, lets a test click on things and hands back the video memory as a

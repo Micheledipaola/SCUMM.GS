@@ -14,11 +14,15 @@ SRC="${1:-data}"
 MERLIN32="${MERLIN32:-merlin32}"
 CADIUS="${CADIUS:-cadius}"
 
+# The font. src/font_orig.s is the one drawn for this project and is in
+# the repository, so a fresh clone builds and runs. If you would rather
+# have the game's own, tools/font_mm.py lifts it out of MANIAC.EXE into
+# src/fontdata.s, and that takes precedence.
 if [ ! -f src/fontdata.s ]; then
-  echo "src/fontdata.s is missing."
-  echo "It holds the 8x8 font, which is lifted out of the game's own DOS"
-  echo "executable and so is not distributed here. See README.md."
-  exit 1
+  echo "==> font: the one drawn for this project"
+  cp src/font_orig.s src/fontdata.s
+else
+  echo "==> font: src/fontdata.s"
 fi
 
 mkdir -p build
