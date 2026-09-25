@@ -337,6 +337,11 @@ Start            phk
                  sta   Vars+VO_LIGHTS
                  sta   BuioStato
 
+* until a script says otherwise the panel shows everything: sentence
+* line, inventory and verbs
+                 lda   #$00E0
+                 sta   UserIface
+
                  lda   #1                   ; the boot script
                  jsr   StartScript
 
@@ -5055,11 +5060,57 @@ BitAddr          lda   BitNo
 * The low byte goes into variable 21: that is the cursor state, and the
 * game looks at it to know which mode it is in (3 = opening screen).
 * The high byte turns parts of the interface on and off: left alone for now.
+*=======================================================================
+* hCursor ($60) - cursorCommand: the pointer, and what the panel shows
+*=======================================================================
+* One word with two halves. The low byte is the cursor mode the game
+* keeps in variable 21 and looks at to know where it is (3 = the opening
+* screen). The high byte is setUserState, and it was being thrown away:
+*
+*   $01 act on the freeze  $08 and freeze if set
+*   $02 act on the cursor  $10 and show it if set
+*   $04 act on the panel   $20 sentence  $40 inventory  $80 verbs
+*
+* The three panel bits are the whole state, not a change: what is not
+* named is turned off. That is how the save screen hides the inventory
+* and the sentence line and leaves only its own ten verbs - it asks for
+* $9F, and the inventory bit is not in it. Freezing is left alone: the
+* cutscene opcodes already take care of that here.
 hCursor          jsr   VOW1
+                 sta   TmpW
                  and   #$00FF
-                 beq   :fine
+                 beq   :nientecur
                  sta   Vars+VO_CURSOR
+:nientecur       lda   TmpW
+                 xba                        ; the high half
+                 and   #$00FF
+                 sta   UserSt
+                 and   #$0004               ; is it speaking about the panel?
+                 beq   :fine
+                 lda   UserSt
+                 and   #$00E0
+                 cmp   UserIface
+                 beq   :fine                ; nothing changed
+                 sta   UserIface
+                 jsr   PuliscoPan           ; away with what was there, then
+                 lda   #1                   ; whatever is on comes back
+                 sta   PanDirty
+                 sta   VerbsDirty
+                 sta   InvDirty
 :fine            stz   Esito
+                 rts
+
+*=======================================================================
+* PuliscoPan - blank the whole panel
+*=======================================================================
+PuliscoPan       _HideCursor
+                 lda   #SENTTOP*SCRW
+                 sta   FillStart
+                 lda   #DBGTOP*SCRW
+                 sta   FillEnd
+                 lda   #$0000
+                 jsr   FillArea
+                 _ShowCursor
                  rts
 
 *=======================================================================
@@ -7765,7 +7816,11 @@ LeggiNome        stz   NameLen
 *=======================================================================
 * DrawVerbs - the verb panel where the game put it
 *=======================================================================
-DrawVerbs        _HideCursor
+DrawVerbs        lda   UserIface
+                 and   #$0080
+                 bne   :mostra
+                 rts
+:mostra          _HideCursor
                  jsr   DrawVerbsReal
                  _ShowCursor
                  rts
@@ -7840,7 +7895,11 @@ DrawVerbiSoli    stz   VerbIdx
 *=======================================================================
 * Verb, first object, preposition, second object. In the DOS version it
 * is purple (EGA's 13) and sits right above the verb panel.
-DrawFrase        _HideCursor
+DrawFrase        lda   UserIface
+                 and   #$0020
+                 bne   :mostra
+                 rts
+:mostra          _HideCursor
                  lda   #SENTTOP*SCRW
                  sta   FillStart
                  lda   #VERBTOP*SCRW
@@ -8022,7 +8081,11 @@ CercaObcd        stz   ObjDove
 *=======================================================================
 * DrawInv - the four inventory boxes, and the arrows
 *=======================================================================
-DrawInv          _HideCursor
+DrawInv          lda   UserIface
+                 and   #$0040
+                 bne   :mostra
+                 rts
+:mostra          _HideCursor
                  lda   #INVTOP*SCRW
                  sta   FillStart
                  lda   #DBGTOP*SCRW
@@ -10188,6 +10251,8 @@ AltroPC          ds    2
 AltroDelLo       ds    2
 AltroDelHi       ds    2
 RiIdx            ds    2      ; the slot being read back in
+UserSt           ds    2      ; the high half of cursorCommand
+UserIface        ds    2      ; sentence, inventory, verbs
 DiscoAperto      ds    2      ; the disk screen is open
 LuceA            ds    2      ; the numbers from lights()
 LuceB            ds    2
