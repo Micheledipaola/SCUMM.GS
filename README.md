@@ -79,6 +79,35 @@ area is x86 code rather than glyphs, so the script fills the space and the
 punctuation from the drawn font. Either way the format is the same: 128 characters,
 eight bytes each, one byte per row, leftmost pixel in bit 7.
 
+## The screen
+
+Nothing draws on the screen. Everything is built in bank `$01` at the offsets the
+screen uses, and once a frame the shadow hardware carries it across: with bit 3 of
+`$C035` clear, a write to `$2000-$9FFF` of bank `$01` is copied by the hardware into
+the same place in `$E1`. While the frame is being drawn shadowing is off, so bank
+`$01` is ordinary fast memory — a shadowed write runs at the slow speed.
+
+To make the hardware notice a page that is already there, the page is written over
+itself, and the fastest way to write on a 65816 is the stack. `PEI` reads a word from
+the direct page and pushes it: six cycles for two bytes, and the only instruction that
+reads and writes without going through a register. So the direct page goes to the
+start of the page and the stack to its end, and a hundred and twenty-eight `PEI`s copy
+the page onto itself from the top down. Both are bank `$00` addresses, which is what
+`$C005` and `$C003` are for: they send writes and reads of `$0200-$BFFF` to bank `$01`
+instead. Interrupts have to be off while they are, or an interrupt would push its
+return address into the picture — so it goes twelve pages at a time, each bite shorter
+than a sixtieth of a second.
+
+`$01/$2000-$9FFF` is not asked of the Memory Manager. It is the shadow of the screen,
+so nobody else can be using it.
+
+Only the pages that changed are carried across: every routine that draws marks the
+stretch it touched. Whether this is faster than writing straight onto `$E1` depends on
+how much the machine slows a write to the video banks, which is not something an
+emulator can answer — pressing **B** inside a room times four ways of filling the
+window against the sixtieth-of-a-second counter and prints the numbers on the bottom
+line.
+
 ## The tools
 
 Everything under `tools/` is Python, and none of it runs on the IIGS — it exists to

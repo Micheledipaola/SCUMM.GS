@@ -32,26 +32,101 @@ class Ferma(Exception):
 
 
 class Memoria:
+    """Flat RAM, plus the three pieces of IIGS plumbing the fast blit needs.
+
+    Shadowing: with bit 3 of $C035 clear, every write to $2000-$9FFF of
+    bank $00 or $01 is copied by the hardware into the same offset of
+    $E0 or $E1.  The super hi-res screen lives in $E1, so writing into
+    bank $01 paints the screen.
+
+    RAMRD / RAMWRT ($C003/$C002 and $C005/$C004): the old IIe switches.
+    With them on, reads and writes to $0200-$BFFF of bank $00 are served
+    by bank $01 instead.  Since the stack and the direct page are always
+    bank $00 addresses, this is the only way to put them in bank $01 --
+    which is what the PEI slam needs.
+    """
+
     def __init__(self):
         self.m = bytearray(MEMSIZE)
+        self.ramrd = False       # $C003 on, $C002 off
+        self.ramwrt = False      # $C005 on, $C004 off
+        self.shadow = True       # $C035 bit 3 clear: SHR shadowing on
+        self.c035 = 0x00
+        self.softwatch = None    # a hook, for the tests
 
+    # --- the soft switches ----------------------------------------------
+    def io(self, reg, v, scrittura):
+        """$C0xx in bank $00, $01, $E0 or $E1. Returns what a read sees."""
+        if reg == 0x02:
+            self.ramrd = False
+        elif reg == 0x03:
+            self.ramrd = True
+        elif reg == 0x04:
+            self.ramwrt = False
+        elif reg == 0x05:
+            self.ramwrt = True
+        elif reg == 0x35:
+            if scrittura:
+                self.c035 = v & 0xFF
+                self.shadow = not (v & 0x08)
+            return self.c035
+        if self.softwatch is not None:
+            self.softwatch(self, reg, v, scrittura)
+        return 0
+
+    @staticmethod
+    def _e_io(a):
+        return (a & 0xFF00) == 0xC000 and (a >> 16) in (0x00, 0x01, 0xE0, 0xE1)
+
+    # --- reading --------------------------------------------------------
     def b(self, a):
-        return self.m[a & 0xFFFFFF]
+        a &= 0xFFFFFF
+        if a < 0x020000:
+            if (a & 0xFF00) == 0xC000:
+                return self.io(a & 0xFF, 0, False)
+            if self.ramrd and a < 0x010000 and 0x0200 <= a < 0xC000:
+                a |= 0x010000
+        elif (a >> 16) in (0xE0, 0xE1) and (a & 0xFF00) == 0xC000:
+            return self.io(a & 0xFF, 0, False)
+        return self.m[a]
 
     def w(self, a):
         a &= 0xFFFFFF
-        return self.m[a] | (self.m[(a + 1) & 0xFFFFFF] << 8)
+        if a >= 0x020000 and (a & 0xFFFF) < 0xFFFF and \
+                not ((a >> 16) in (0xE0, 0xE1) and (a & 0xFF00) == 0xC000):
+            return self.m[a] | (self.m[a + 1] << 8)
+        return self.b(a) | (self.b((a & 0xFF0000) | ((a + 1) & 0xFFFF)) << 8)
 
     def l(self, a):
-        return self.w(a) | (self.b(a + 2) << 16)
+        return self.w(a) | (self.b((a & 0xFF0000) | ((a + 2) & 0xFFFF)) << 16)
 
+    # --- writing --------------------------------------------------------
     def setb(self, a, v):
-        self.m[a & 0xFFFFFF] = v & 0xFF
+        a &= 0xFFFFFF
+        if a < 0x020000:
+            if (a & 0xFF00) == 0xC000:
+                self.io(a & 0xFF, v, True)
+                return
+            if self.ramwrt and a < 0x010000 and 0x0200 <= a < 0xC000:
+                a |= 0x010000
+            self.m[a] = v & 0xFF
+            if self.shadow and 0x2000 <= (a & 0xFFFF) < 0xA000:
+                self.m[0xE00000 | (a & 0x01FFFF)] = v & 0xFF
+            return
+        if (a >> 16) in (0xE0, 0xE1) and (a & 0xFF00) == 0xC000:
+            self.io(a & 0xFF, v, True)
+            return
+        self.m[a] = v & 0xFF
 
     def setw(self, a, v):
         a &= 0xFFFFFF
-        self.m[a] = v & 0xFF
-        self.m[(a + 1) & 0xFFFFFF] = (v >> 8) & 0xFF
+        if a >= 0x020000 and (a & 0xFFFF) < 0xFFFF and \
+                not ((a >> 16) in (0xE0, 0xE1) and (a & 0xFF00) == 0xC000):
+            self.m[a] = v & 0xFF
+            self.m[a + 1] = (v >> 8) & 0xFF
+            return
+        self.setb(a, v)
+        self.setb((a & 0xFF0000) | ((a + 1) & 0xFFFF), v >> 8)
 
 
 # ----------------------------------------------------------------------
