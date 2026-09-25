@@ -4752,13 +4752,26 @@ hPutInRoom       jsr   VOB1
 :fine            stz   Esito
                  rts
 
+*=======================================================================
+* hActorRoom ($03) - getActorRoom: which room a character is in
+*=======================================================================
+* This used to answer zero for everybody, and that one lie was enough to
+* send you to the dungeon the moment Edna saw you: her script 36 asks
+* where she is, compares it with the room you are in, and if the two
+* differ it takes that to mean she has chased you out of sight and
+* catches you there and then, without a word. Out of range the original
+* answers zero as well, so an actor who does not exist is nowhere.
 hActorRoom       jsr   FetchB
                  sta   TmpW
                  jsr   ResolveVar
                  stx   DestVar
                  jsr   VOB1
-                 lda   #0
-                 ldx   DestVar
+                 jsr   ActIndex
+                 bcs   :nessuno
+                 lda   ActRoom,x
+                 bra   :dillo
+:nessuno         lda   #0
+:dillo           ldx   DestVar
                  sta   Vars,x
                  stz   Esito
                  rts
@@ -7076,10 +7089,48 @@ hGetDist         jsr   FetchB
 * DistanzaFra - how far apart DistA and DistB are, which can be
 *               characters or objects
 *=======================================================================
-* Like getObjActToObjActDist. Whatever cannot be found is as far away as
-* possible ($FF), so the game says "I can't reach it" instead of
-* pretending nothing happened.
-DistanzaFra      lda   DistA
+* This is getObjActToObjActDist, and it is worth saying exactly what it
+* measures, because getting it wrong cost a long hunt.
+*
+* ScummVM keeps a V2 actor's position in the units the scripts use, and
+* only multiplies by eight and by two when it needs pixels: getPos()
+* scales, getRealPos() does not. getObjectOrActorXY reads getRealPos, and
+* an object's walk point goes through the same door (walk_x >> 3,
+* walk_y >> 1). So both sides arrive here in script units.
+*
+* The distance itself is getDist: MAX(|dx|, |dy|). Chebyshev, not
+* Pythagoras - a square, not a circle.
+*
+* Together they explain the numbers the game uses. Script 36 has Edna
+* walk to within 2 of her victim and then declares him caught at "<= 2":
+* the same 2, in the same units, so the chase ends the moment she gets
+* there. Measuring in pixels instead made that 2 unreachable, the chase
+* never ended, and getClosestObjActor - which ignores anything farther
+* than 255 - answered "nobody" and stopped Edna's script before she had
+* said a word.
+*
+* Whatever cannot be found is as far away as possible ($FF), so the game
+* says "I can't reach it" instead of pretending nothing happened. Two
+* characters together in some other room count as touching (distance 0),
+* as in the original.
+DistanzaFra      lda   DistB
+                 jsr   ActIndex
+                 bcs   :nonatt
+                 lda   ActRoom,x
+                 sta   DistRB
+                 lda   DistA
+                 jsr   ActIndex
+                 bcs   :nonatt
+                 lda   ActRoom,x
+                 beq   :nonatt              ; nowhere: measure as usual
+                 cmp   DistRB
+                 bne   :nonatt
+                 cmp   CurRoom
+                 beq   :nonatt              ; here: measure as usual
+                 lda   #0                   ; elsewhere, but together
+                 rts
+
+:nonatt          lda   DistA
                  jsr   DovE
                  bcs   :lontano
                  lda   PosX
@@ -7090,27 +7141,13 @@ DistanzaFra      lda   DistA
                  jsr   DovE
                  bcs   :lontano
 
-* The distance has to be counted in pixels, not in the units the game
-* keeps positions in: x goes in steps of eight pixels and y in steps of
-* two. Measured in units, the "<= 2" Edna uses to decide she has caught
-* you was worth sixteen pixels instead of two, and she grabbed you from
-* the far side of the counter without giving you time to run.
                  lda   DistX1               ; |x1 - x2|
                  sec
                  sbc   PosX
                  bpl   :xok
                  eor   #$FFFF
                  inc   a
-:xok             cmp   #23                  ; beyond that it is far away anyway,
-                 bcs   :lontano             ; and the squares would not fit
-                 asl   a
-                 asl   a
-                 asl   a
-                 sta   MulA
-                 sta   MulB
-                 jsr   MoltiplicaW
-                 lda   ProdLo
-                 sta   DistQ
+:xok             sta   DistQ
 
                  lda   DistY1               ; |y1 - y2|
                  sec
@@ -7118,57 +7155,13 @@ DistanzaFra      lda   DistA
                  bpl   :yok
                  eor   #$FFFF
                  inc   a
-:yok             cmp   #91
-                 bcs   :lontano
-                 asl   a
-                 sta   MulA
-                 sta   MulB
-                 jsr   MoltiplicaW
-                 lda   ProdLo
-                 clc
-                 adc   DistQ
-                 bcs   :lontano
-                 jsr   RadiceW
-                 cmp   #$00FF
+:yok             cmp   DistQ                ; keep the larger of the two
+                 bcs   :tieni
+                 lda   DistQ
+:tieni           cmp   #$00FF               ; a byte is all the game reads
                  bcc   :piccolo
 :lontano         lda   #$00FF
 :piccolo         rts
-
-*=======================================================================
-* RadiceW - the integer square root of A, sixteen bits
-*=======================================================================
-RadiceW          sta   RadN
-                 stz   RadRes
-                 lda   #$4000
-                 sta   RadBit
-:lp              lda   RadBit
-                 beq   :fine
-                 clc
-                 adc   RadRes
-                 sta   RadTmp
-                 cmp   RadN
-                 beq   :togli
-                 bcc   :togli
-                 lda   RadRes               ; does not fit
-                 lsr   a
-                 sta   RadRes
-                 bra   :avanti
-:togli           lda   RadN
-                 sec
-                 sbc   RadTmp
-                 sta   RadN
-                 lda   RadRes
-                 lsr   a
-                 clc
-                 adc   RadBit
-                 sta   RadRes
-:avanti          lda   RadBit
-                 lsr   a
-                 lsr   a
-                 sta   RadBit
-                 bra   :lp
-:fine            lda   RadRes
-                 rts
 
 *=======================================================================
 * DovE - A = a character or an object. Returns PosX/PosY, carry if
@@ -9869,11 +9862,7 @@ BuioR            ds    2
 BuioSm           ds    2
 BuioOn           ds    2      ; the room is dark
 FineCopia        ds    2
-DistQ            ds    2      ; the square of the x difference
-RadN             ds    2
-RadRes           ds    2
-RadBit           ds    2
-RadTmp           ds    2
+DistQ            ds    2      ; the x difference, while y is measured
 BuioStato        ds    2      ; how it was lit last time
 Alive            ds    2
 Tick             ds    4
@@ -10196,6 +10185,7 @@ DistA            ds    2
 DistB            ds    2
 DistX1           ds    2
 DistY1           ds    2
+DistRB           ds    2      ; which room the second one is in
 PosX             ds    2
 PosY             ds    2
 SentHot          ds    2
