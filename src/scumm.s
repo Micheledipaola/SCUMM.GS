@@ -3691,6 +3691,54 @@ RidisegnaAttori  lda   RoomH
                  rts
 
 *=======================================================================
+* CancellaAttore - rub character ActIdx off the room he is in
+*=======================================================================
+* The same two steps the redrawing pass uses for somebody who has moved:
+* the background and the objects go back over the box he last occupied,
+* and that box is marked so it reaches the screen. Then the box is
+* emptied, so nothing tries to clean it a second time.
+CancellaAttore   lda   ActVis,x
+                 bne   :c_e
+                 rts
+:c_e             jsr   ScatolaVecchia
+                 bcc   :c_ebox
+                 rts
+:c_ebox          jsr   PuliscoRett
+                 lda   DstX
+                 sta   AggX
+                 lda   DstY
+                 sta   AggY
+                 lda   DstX
+                 clc
+                 adc   BlkW
+                 sta   AggR
+                 lda   DstY
+                 clc
+                 adc   BlkH
+                 sta   AggB
+                 jsr   RidisegnaRett
+                 lda   AggX
+                 sta   DstX
+                 lda   AggY
+                 sta   DstY
+                 lda   AggR
+                 sec
+                 sbc   AggX
+                 sta   BlkW
+                 lda   AggB
+                 sec
+                 sbc   AggY
+                 sta   BlkH
+                 jsr   SegnaRett
+                 ldx   ActIdx               ; nothing left to clean here
+                 lda   #0
+                 sta   ActBX1,x
+                 sta   ActBX2,x
+                 sta   ActBY1,x
+                 sta   ActBY2,x
+                 rts
+
+*=======================================================================
 * AttoreInScena - carry clear if actor ActIdx should be drawn
 *=======================================================================
 AttoreInScena    ldx   ActIdx
@@ -4738,6 +4786,14 @@ hPutActor        jsr   VOB1
 :fine            stz   Esito
                  rts
 
+*=======================================================================
+* hPutInRoom ($2D) - putActorInRoom: a character changes room
+*=======================================================================
+* Taking somebody out of the room he is standing in means rubbing him
+* off the picture first. The erasing pass only looks at characters whose
+* room is this one, so once the room number has changed nobody ever
+* cleans up after him and what was drawn stays there for good: at the end
+* of Edna's cutscene the doctor left his feet on the floor of the cell.
 hPutInRoom       jsr   VOB1
                  sta   ActNo
                  jsr   VOB2
@@ -4745,6 +4801,15 @@ hPutInRoom       jsr   VOB1
                  lda   ActNo
                  jsr   ActIndex
                  bcs   :fine
+                 stx   ActIdx
+                 lda   ActRoom,x            ; where he is leaving from
+                 cmp   CurRoom
+                 bne   :nonquesta
+                 lda   ActArg
+                 cmp   CurRoom
+                 beq   :nonquesta           ; he is not really leaving
+                 jsr   CancellaAttore
+:nonquesta       ldx   ActIdx
                  lda   ActArg
                  sta   ActRoom,x
                  stz   ActVis,x
