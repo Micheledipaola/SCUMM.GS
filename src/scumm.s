@@ -59,6 +59,7 @@ PANEND           =     32000
 SENTTOP          =     144            ; the sentence being built
 INVTOP           =     176            ; the four inventory boxes
 INVROW2          =     184
+COLFRECCIA       =     6              ; the arrows, as in the original
 DBGTOP           =     192            ; the last row, for faults
 CRED1TOP         =     176            ; the credit, where on the
 CRED2TOP         =     184            ; credits there is nothing else
@@ -596,10 +597,12 @@ DoClick          lda   EvtWhere             ; in IIGS points the vertical
                  sta   MouseX
 :ok              lda   MouseX
                  cmp   #SCRPIX
-                 bcs   :fine
+                 bcs   :fuori
                  lda   MouseY
                  cmp   #200
-                 bcs   :fine
+                 bcc   :dentro
+:fuori           rts
+:dentro          anop
 
 * The scripts count x in steps of eight and y in steps of two. Given
 * pixels, walkActorTo got a target eight times too far away and the
@@ -651,7 +654,14 @@ DoClick          lda   EvtWhere             ; in IIGS points the vertical
 :inventario      lda   MouseY
                  cmp   #DBGTOP
                  bcs   :fine
-                 jsr   OggettoSotto
+                 lda   MouseX               ; the strip between the two
+                 cmp   #144                 ; columns holds the arrows
+                 bcc   :nonfreccia
+                 cmp   #176
+                 bcs   :nonfreccia
+                 jsr   ScorriInv
+                 bra   :fine
+:nonfreccia      jsr   OggettoSotto
                  bcs   :fine
                  sta   Vars+VO_CLICKOBJ
                  lda   #3                   ; clicked the inventory
@@ -678,7 +688,11 @@ OggettoSotto     lda   MouseY
                  cmp   #176
                  bcc   :niente              ; the arrows are in between
                  inc   InvQuale
-:colonnaok       stz   InvVisti
+:colonnaok       lda   InvQuale             ; the boxes show the four from
+                 clc                        ; InvOff on
+                 adc   InvOff
+                 sta   InvQuale
+                 stz   InvVisti
                  stz   InvIdx
 :lp              ldx   InvIdx
                  lda   InvObj,x
@@ -8099,12 +8113,21 @@ DrawInv          lda   UserIface
 * Two rows by two columns, as in the DOS version: on the left from 0 to
 * 17 characters, on the right from 22 to 39, and the two arrows between.
 DrawInvReal      stz   InvVisti
+                 stz   InvQuanti
                  stz   InvIdx
 :lp              ldx   InvIdx
                  lda   InvObj,x
                  beq   :prossimo
                  jsr   MioOggetto           ; does the player really own it?
                  bcs   :prossimo
+                 inc   InvQuanti            ; one more that he owns
+                 lda   InvQuanti            ; still above the window?
+                 cmp   InvOff
+                 bcc   :prossimo
+                 beq   :prossimo
+                 lda   InvVisti
+                 cmp   #4
+                 bcs   :prossimo            ; the window is already full
 
                  lda   InvVisti             ; where it is written
                  and   #1
@@ -8137,17 +8160,184 @@ DrawInvReal      stz   InvVisti
                  lda   InvObj,x
                  jsr   ScriviNomeDi
                  inc   InvVisti
-                 lda   InvVisti
-                 cmp   #4
-                 bcs   :basta
+:prossimo        lda   InvIdx
+                 clc
+                 adc   #2
+                 sta   InvIdx
+                 cmp   #INVSLOTS*2
+                 bcs   :finiti
+                 brl   :lp
+:finiti          anop
+
+* the arrows, once it is known how many there really are
+                 lda   InvOff
+                 beq   :nosu
+                 lda   #INVTOP
+                 ldx   #0                   ; pointing up
+                 jsr   DisegnaFreccia
+:nosu            lda   InvOff
+                 clc
+                 adc   #4
+                 cmp   InvQuanti
+                 bcs   :nogiu
+                 lda   #INVROW2
+                 ldx   #1                   ; pointing down
+                 jsr   DisegnaFreccia
+:nogiu           lda   #15
+                 jmp   SetTextColor
+
+*=======================================================================
+* DisegnaFreccia - A = the row it starts on, X = 0 up, 1 down
+*=======================================================================
+* Drawn here rather than written with the font. In the DOS version the
+* two arrows are characters 1 to 4 of the game's own font, and this
+* interpreter should not depend on what a particular font happens to
+* have below the space. Sixteen pixels wide and seven tall, in the strip
+* between the two columns of names, which is exactly where the original
+* puts them.
+FRECCIAX         =     152                  ; pixels from the left
+FRECCIAW         =     8                    ; bytes: sixteen pixels
+
+DisegnaFreccia   sta   FrecciaY
+                 stx   FrecciaVerso
+                 stz   FrecciaR
+:riga            lda   FrecciaR             ; how wide this row is: the tip
+                 cmp   #7                   ; is one pixel, the base sixteen
+                 bcs   :fatta
+                 lda   FrecciaVerso
+                 beq   :versosu
+                 lda   #6
+                 sec
+                 sbc   FrecciaR
+                 bra   :largo
+:versosu         lda   FrecciaR
+:largo           asl   a                    ; two pixels wider each row
+                 inc   a
+                 sta   FrecciaN             ; pixels lit on this row
+                 lda   #8
+                 sec
+                 sbc   FrecciaR
+                 lda   FrecciaVerso
+                 beq   :suok
+                 lda   #6
+                 sec
+                 sbc   FrecciaR
+                 bra   :meta
+:suok            lda   FrecciaR
+:meta            sta   FrecciaM             ; half the width, rounded down
+
+                 lda   FrecciaY             ; where the row starts
+                 clc
+                 adc   FrecciaR
+                 jsr   RigaSchermo
+                 sta   FrecciaP
+                 lda   #8                   ; the middle of the sixteen
+                 sec
+                 sbc   FrecciaM
+                 clc
+                 adc   #FRECCIAX
+                 sta   FrecciaX0
+                 stz   FrecciaI
+:pix             lda   FrecciaI
+                 cmp   FrecciaN
+                 bcs   :finita
+                 lda   FrecciaX0
+                 clc
+                 adc   FrecciaI
+                 jsr   PuntoFreccia
+                 inc   FrecciaI
+                 bra   :pix
+:finita          inc   FrecciaR
+                 bra   :riga
+:fatta           rts
+
+* One pixel of the arrow: A = the column, FrecciaP = the row's first byte
+PuntoFreccia     pha
+                 lsr   a
+                 clc
+                 adc   FrecciaP
+                 tax
+                 pla
+                 and   #1
+                 bne   :bassa
+                 sep   #$20
+                 mx    %10
+                 ldal  SHRBASE,x
+                 and   #$0F
+                 ora   #COLFRECCIA*16
+                 bra   :metti
+:bassa           sep   #$20
+                 mx    %10
+                 ldal  SHRBASE,x
+                 and   #$F0
+                 ora   #COLFRECCIA
+:metti           stal  SHRBASE,x
+                 rep   #$20
+                 mx    %00
+                 rts
+
+* RigaSchermo - A = row, returns the offset of its first byte
+RigaSchermo      asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 sta   TmpW
+                 asl   a
+                 asl   a
+                 clc
+                 adc   TmpW
+                 rts
+
+*=======================================================================
+* ScorriInv - a click on the arrows moves the window by two
+*=======================================================================
+* Two at a time, not four, so the pair that was at the bottom comes back
+* at the top: that is how the original scrolls, and it keeps a long list
+* readable.
+ScorriInv        lda   MouseY
+                 cmp   #INVROW2
+                 bcs   :giu
+                 lda   InvOff               ; up
+                 beq   :fine
+                 sec
+                 sbc   #2
+                 sta   InvOff
+                 bra   :ridisegna
+:giu             jsr   ContaInv
+                 sta   InvTot
+                 lda   InvOff
+                 clc
+                 adc   #4
+                 cmp   InvTot
+                 bcs   :fine                ; the last ones are already there
+                 lda   InvOff
+                 clc
+                 adc   #2
+                 sta   InvOff
+:ridisegna       lda   #1
+                 sta   InvDirty
+:fine            rts
+
+*=======================================================================
+* ContaInv - how many objects the player is carrying
+*=======================================================================
+ContaInv         stz   InvTot
+                 stz   InvIdx
+:lp              ldx   InvIdx
+                 lda   InvObj,x
+                 beq   :prossimo
+                 jsr   MioOggetto
+                 bcs   :prossimo
+                 inc   InvTot
 :prossimo        lda   InvIdx
                  clc
                  adc   #2
                  sta   InvIdx
                  cmp   #INVSLOTS*2
                  bcc   :lp
-:basta           lda   #15
-                 jmp   SetTextColor
+                 lda   InvTot
+                 rts
 
 *=======================================================================
 * MioOggetto - carry clear if the object in A belongs to the player
@@ -10253,6 +10443,17 @@ AltroDelHi       ds    2
 RiIdx            ds    2      ; the slot being read back in
 UserSt           ds    2      ; the high half of cursorCommand
 UserIface        ds    2      ; sentence, inventory, verbs
+InvOff           ds    2      ; the first object shown
+InvQuanti        ds    2      ; how many were counted drawing
+InvTot           ds    2
+FrecciaY         ds    2
+FrecciaVerso     ds    2
+FrecciaR         ds    2
+FrecciaN         ds    2
+FrecciaM         ds    2
+FrecciaP         ds    2
+FrecciaX0        ds    2
+FrecciaI         ds    2
 DiscoAperto      ds    2      ; the disk screen is open
 LuceA            ds    2      ; the numbers from lights()
 LuceB            ds    2
