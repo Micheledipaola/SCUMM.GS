@@ -380,16 +380,23 @@ MainLoop         jsr   Orologio
 * not do, and the screen would keep looking at the old position.
 * If the lights changed, the room held in memory is no longer right:
 * either it was black and is now visible, or the other way round.
+                 lda   RoomH
+                 beq   :luceok
                  lda   Vars+VO_LIGHTS
                  and   #6
                  cmp   BuioStato
                  beq   :luceok
-                 lda   RoomH
-                 beq   :luceok
-                 jsr   DecodeRoom
+                 lda   BuioStato            ; it was lit: darkening is only a
+                 bne   :bastacomporre       ; matter of composing again
+                 jsr   DecodeRoom           ; it was dark, and the black was
+:bastacomporre   lda   #1                   ; laid on the room itself: the
+                 sta   DaComporre           ; background has to come back
+:luceok          lda   DaComporre
+                 beq   :compostook
+                 jsr   ComponiStanza
                  lda   #1
                  sta   Redraw
-:luceok          anop
+:compostook      anop
 
                  lda   ScrollX
                  cmp   ScrollDis
@@ -2526,10 +2533,14 @@ CamMoved         lda   CamCur
                  sta   ScrollX
                  lda   #1                   ; changed: redraw everything
                  sta   Redraw
-:uguale          lda   CamCur               ; the scripts count it in
-                 lsr   a                    ; steps of eight, not pixels
-                 lsr   a
-                 lsr   a
+* VAR_CAMERA_POS_X is in pixels, not in the units the scripts use for x
+* elsewhere: ScummVM assigns camera._cur.x to it untouched, and
+* setCameraAt multiplies the script's argument by eight on the way in.
+* Dividing it here made Edna's ambush wait for 47*8 pixels instead of 47:
+* she only noticed you once you were on top of her, with no room left to
+* run. Her script really does say "as soon as the camera is anywhere past
+* the left edge", because the camera never goes below half a screen.
+:uguale          lda   CamCur
                  sta   Vars+VO_CAMPOS
                  rts
 
@@ -4966,14 +4977,28 @@ hCursor          jsr   VOW1
 :fine            stz   Esito
                  rts
 
-hPrint           jsr   VOB1
+*=======================================================================
+* hPrint ($14) / hPrintEgo ($D8) - somebody says something
+*=======================================================================
+* Whoever was talking stops first. actorTalk does the same (stopTalk
+* before runActorTalkScript) and it is not a detail: a line that arrives
+* while the one before is still on screen replaces it without the timer
+* ever running out, so nobody would close the first speaker's mouth.
+* Bernard is where it showed: he says "Ok, I'm outta here!", Razor cuts
+* in over him, and from then on Bernard chewed his way through the rest
+* of the scene. The standing animation does not touch the mouth - in the
+* costume it is a limb of its own, and only the two talk animations
+* touch it - so once it is left looping nothing takes it back.
+hPrint           jsr   SmettiParlare
+                 jsr   VOB1
                  jsr   ColoreVoce
                  jsr   CatchStr
                  jsr   AttaccaParlare
                  stz   Esito
                  rts
 
-hPrintEgo        lda   Vars+VO_EGO
+hPrintEgo        jsr   SmettiParlare
+                 lda   Vars+VO_EGO
                  jsr   ColoreVoce
                  jsr   CatchStr
                  jsr   AttaccaParlare
@@ -5729,7 +5754,15 @@ AggiornaOggetto  lda   RoomH
 * lit one in the same place. On the kid-selection screen the white frame
 * around the chosen kid and the kid blinking sit exactly on top of each
 * other, and whichever went off last took the other with it.
-RidisegnaRett    ldy   #20
+* In the dark the room is black and the objects are not drawn, so putting
+* one back after a state change would light it up on its own: the door of
+* the library kept showing the lit room behind it, and only a trip through
+* the light switch washed it away.
+RidisegnaRett    lda   Vars+VO_LIGHTS
+                 and   #6
+                 bne   :c_eluce
+                 rts
+:c_eluce         ldy   #20
                  lda   [zpRaw],y
                  and   #$00FF
                  sta   AggNum
@@ -8109,6 +8142,7 @@ ChangeRoom       sta   CurRoom
                  bcs   :vuota
 
                  jsr   DecodeRoom
+                 stz   ScrollX              ; a new room starts from the left
 
 * the camera limits depend on how wide the room is
                  ldx   #0                   ; whoever comes in is reassembled
@@ -8185,7 +8219,6 @@ DecodeRoom       ldy   #4
                  lda   #0
 :pos             and   #$FFF8
                  sta   MaxScroll
-                 stz   ScrollX
 
                  lda   RoomW                ; one bit per pixel: eight pixels
                  lsr   a                    ; in one byte
@@ -8238,21 +8271,29 @@ DecodeRoom       ldy   #4
                  cpy   CopyLen
                  bcc   :copia
 
-                 jsr   BuioTotale
-                 bcs   :alnero              ; in the dark, no room
-                 jsr   DrawObjects
-:alnero          jsr   DrawActors
+                 lda   #1                   ; what goes on top of it is put
+                 sta   DaComporre           ; together separately
+                 lda   #$FFFF
+                 sta   BuioStato            ; and the lights are not known yet
                  rts
 
 *=======================================================================
-* BuioTotale - carry set if the room must be kept black
+* ComponiStanza - what goes on top of the decoded background
 *=======================================================================
+* Kept apart from the decoding because it has to happen after the room's
+* entry script has run: that script is where the lights are set, and a
+* dark room composed before it ran showed one frame of lit room, and its
+* characters in their own colours, before turning black. So ChangeRoom
+* only decodes, and the main loop composes once the scripts have had
+* their say.
+*
 * With no light and no flashlight the game does not draw the room: it
-* stays black, and only the characters go on top. So it is better to
-* black out the room held in memory itself, rather than blacking the
-* screen after drawing it: that way the characters land on top by
-* themselves, and blitting in pieces keeps working.
-BuioTotale       lda   Vars+VO_LIGHTS
+* stays black and only the characters go on top. Blacking the room held
+* in memory, rather than the screen after drawing it, is what lets the
+* characters land on top by themselves and keeps the piecewise blit
+* working.
+ComponiStanza    stz   DaComporre
+                 lda   Vars+VO_LIGHTS
                  and   #6
                  sta   BuioStato
                  bne   :c_eluce
@@ -8266,9 +8307,9 @@ BuioTotale       lda   Vars+VO_LIGHTS
                  iny
                  cpy   CopyLen
                  bcc   :lp
-                 sec
-                 rts
-:c_eluce         clc
+                 bra   :attori
+:c_eluce         jsr   DrawObjects
+:attori          jsr   DrawActors
                  rts
 
 *=======================================================================
@@ -8949,34 +8990,48 @@ DrawGuasto       lda   BadOp
                  jsr   ScriviDbg
                  lda   CamCur
                  jsr   DrawNum
-                 lda   #MsgD
-                 jsr   ScriviDbg
-                 lda   CamDest
-                 jsr   DrawNum
                  lda   #MsgS
                  jsr   ScriviDbg
                  lda   ScrollX
-                 jsr   DrawNum
-                 lda   #MsgM
-                 jsr   ScriviDbg
-                 lda   CamMode
                  jsr   DrawNum
                  lda   #MsgMax
                  jsr   ScriviDbg
                  lda   Vars+VO_CAMMAX
                  jsr   DrawNum
-                 lda   #MsgU
+                 lda   #MsgL                ; how the room is lit
                  jsr   ScriviDbg
-                 lda   CamChi
+                 lda   Vars+VO_LIGHTS
                  jsr   DrawNum
-                 lda   CamChi2
-                 jsr   DrawNum
-                 lda   CamChi3
-                 jsr   DrawNum
-                 lda   #MsgP
+                 lda   #MsgK                ; and which scripts are running
                  jsr   ScriviDbg
-                 lda   CamQuale
-                 jmp   DrawNum
+                 stz   DbgIdx
+* DrawStr wraps at the fortieth column, and the debug line is the last one
+* on the screen: wrapping it walked off the bottom and sprayed the whole
+* display with rubbish that nothing ever cleaned up again. So stop while
+* there is still room.
+:copioni         lda   TxtX
+                 cmp   #35
+                 bcc   :c_eposto
+                 rts
+:c_eposto        ldx   DbgIdx
+                 lda   SlotStat,x
+                 beq   :prossimo
+                 lda   SlotWhere,x
+                 bne   :prossimo            ; only the global ones
+                 ldx   DbgIdx
+                 lda   SlotNum,x
+                 cmp   #$7FFF
+                 beq   :prossimo
+                 jsr   DrawNum
+                 lda   #MsgSpazio
+                 jsr   ScriviDbg
+:prossimo        lda   DbgIdx
+                 clc
+                 adc   #2
+                 sta   DbgIdx
+                 cmp   #SLOTS*2
+                 bcc   :copioni
+                 rts
 
 * The debug labels all live in the same bank: the low word is enough to
 * pick one.
@@ -9346,6 +9401,12 @@ MsgMax           asc   ' M'
 MsgU             asc   ' u'
                  dfb   0
 MsgP             asc   ' P'
+                 dfb   0
+MsgL             asc   ' L'
+                 dfb   0
+MsgK             asc   ' k'
+                 dfb   0
+MsgSpazio        asc   ' '
                  dfb   0
 MsgRoom          asc   'room '
                  dfb   0
@@ -9864,6 +9925,8 @@ BuioOn           ds    2      ; the room is dark
 FineCopia        ds    2
 DistQ            ds    2      ; the x difference, while y is measured
 BuioStato        ds    2      ; how it was lit last time
+DaComporre       ds    2      ; the room is decoded but not composed
+DbgIdx           ds    2      ; the slot the debug line is at
 Alive            ds    2
 Tick             ds    4
 LastTick         ds    2
