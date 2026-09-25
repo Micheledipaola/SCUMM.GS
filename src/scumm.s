@@ -5918,6 +5918,7 @@ AggiornaOggetto  lda   RoomH
 * makes the next frame draw them again and put them right.
                  lda   #1
                  sta   ActDirty
+                 sta   DaComporre           ; and the masks are no longer right
 
                  lda   AggX                 ; what goes to the screen is that
                  sta   DstX                 ; piece, not the last object
@@ -8632,7 +8633,9 @@ DecodeRoom       ldy   #4
                  lda   RoomH
                  sta   BlkH
                  jsr   DecodeRLE
-                 jsr   DecodeMaschera       ; right after the pixels
+                 lda   SrcIdx               ; the room's mask begins here,
+                 sta   MaskSrc              ; right after its pixels
+                 jsr   DecodeMaschera
 
 * a copy of the background alone: it is what makes an object disappear
 * without decompressing the whole room again
@@ -8653,6 +8656,26 @@ DecodeRoom       ldy   #4
                  rts
 
 *=======================================================================
+* RifaiMaschera - the room's own mask, as it came off disk
+*=======================================================================
+* The base every compose starts from: the objects that are lit then write
+* theirs over it, so one that has gone out stops hiding anybody. Only the
+* mask is read again, not the picture, so this costs a few hundred bytes
+* of decoding and not a whole room.
+RifaiMaschera    lda   RoomH
+                 bne   :c_e
+                 rts
+:c_e             lda   MaskSrc
+                 sta   SrcIdx
+                 stz   DstX
+                 stz   DstY
+                 lda   RoomW
+                 sta   BlkW
+                 lda   RoomH
+                 sta   BlkH
+                 jmp   DecodeMaschera
+
+*=======================================================================
 * ComponiStanza - what goes on top of the decoded background
 *=======================================================================
 * Kept apart from the decoding because it has to happen after the room's
@@ -8668,6 +8691,7 @@ DecodeRoom       ldy   #4
 * characters land on top by themselves and keeps the piecewise blit
 * working.
 ComponiStanza    stz   DaComporre
+                 jsr   RifaiMaschera
                  lda   Vars+VO_LIGHTS
                  and   #6
                  sta   BuioStato
@@ -8885,11 +8909,17 @@ DrawObjects      ldy   #20
                  lda   ObjImgOff
                  sta   SrcOff
                  jsr   DecodeRLE
-* Objects carry a mask of their own too, and for now it is skipped: they
-* light and go out constantly, and without a clean copy to put back
-* underneath, the mask of one that went off would stay around and eat
-* pieces of character. The room background is enough for railings and
-* low walls.
+* An object carries a mask of its own, right after its picture, and it
+* has to go into the plane over the room's. The bowl of wax fruit is
+* where it showed: the bowl is painted into the room's background and is
+* in the room's mask, so the table hides the character's legs and the
+* bowl hides whatever is behind it. Picking it up lights the object,
+* whose picture is that piece of table without the bowl - and whose mask
+* is the table without the bowl too. Skipping it left the room's mask
+* untouched, so an invisible bowl went on eating a piece of anyone who
+* stood there, and coming back into the room did not help: the shape is
+* in the room's own data.
+                 jsr   DecodeMaschera
 
 :prossimo        lda   ObjIdx
                  sec
@@ -10478,6 +10508,7 @@ DistQ            ds    2      ; the x difference, while y is measured
 BuioStato        ds    2      ; how it was lit last time
 DaComporre       ds    2      ; the room is decoded but not composed
 DbgIdx           ds    2      ; the slot the debug line is at
+MaskSrc          ds    2      ; where the room's own mask begins
 Alive            ds    2
 Tick             ds    4
 LastTick         ds    2
