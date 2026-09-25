@@ -53,12 +53,24 @@ So this repository carries a font drawn for the project instead — 5x7 shapes i
 letters are actually designed (one string of ones and zeros per row, easy to read
 and to change). The build uses it automatically, so a fresh clone runs.
 
-If you would rather see the game's own lettering, `tools/font_mm.py` lifts it out of
-your `MANIAC.EXE`:
+If you would rather see the game's own lettering, `tools/font_mm.py` finds it inside
+the game's program — whichever machine your copy came from:
 
 ```sh
-python3 tools/font_mm.py /path/to/MANIAC.EXE > src/fontdata.s
+python3 tools/font_mm.py /path/to/MANIAC.EXE > src/fontdata.s   # DOS
+python3 tools/font_mm.py /path/to/Maniac     > src/fontdata.s   # Amiga
 ```
+
+It does not know any offsets. A font drawn in an 8x8 cell leaves room under the
+letters and after them, so almost every capital has an empty last row and clear low
+bits, and none is blank; machine code has no such habit. Sliding that test over the
+file finds the table wherever it is. On the DOS executable it lands at `$108FD`,
+starting at character 48; on the Amiga program at `$1890C`, starting at 32 — which
+is why the Amiga copy also has its punctuation, where the DOS one has x86 code below
+48 and borrows those characters from the drawn font.
+
+The Amiga program is the file called `Maniac` on the first floppy; `tools/adf.py`
+gets it off the disk image.
 
 `src/fontdata.s` takes precedence over the drawn font when it exists, and
 `.gitignore` keeps it out of the repository. The table in the executable starts at
@@ -84,7 +96,7 @@ understand the data and to find mistakes in seconds instead of one disk at a tim
 | `gsrun.py` | fakes the toolbox and GS/OS on top of it |
 | `prova.py` | drives the game inside that emulator — clicks, keys, screenshots |
 | `font_orig.py` | the font drawn for this project, and where it is designed |
-| `font_mm.py` | lifts the game's own font out of `MANIAC.EXE` instead |
+| `font_mm.py` | finds the game's own font inside its program, whichever release |
 | `adf.py` | reads files out of an Amiga floppy image, for the Amiga release |
 
 The emulator is the reason this got anywhere. It boots the real interpreter, feeds it
