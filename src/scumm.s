@@ -9663,6 +9663,12 @@ TabDisco         dw    Vars,512
                  dw    CutRoom,2
                  dw    CutCursor,2
                  dw    CutCam,2
+* The script slots: seven tables of twelve words, one after the other in
+* memory. Without them a saved game came back with nothing running - no
+* timers, no background scripts - and Edna stood at her fridge for ever,
+* because the door of the kitchen only sets her on you while script 152
+* is still counting.
+                 dw    SlotNum,168
                  dw    0,0
 
 *=======================================================================
@@ -9721,7 +9727,8 @@ CaricaPos        jsr   ApriPosR
 * the screen's own script, which has to reach the end: it is its
 * endCutscene that takes us back to the right room.
                  jsr   SpegniAltri
-                 stz   DiscoIdx
+                 jsr   MettiDaParte         ; the screen's own slot: the file
+                 stz   DiscoIdx             ; is about to write over it
 :lp              ldx   DiscoIdx
                  lda   TabDisco,x
                  beq   :finito
@@ -9742,12 +9749,152 @@ CaricaPos        jsr   ApriPosR
                  sec
                  rts
 :finito          jsr   ChiudiPos
+                 jsr   RiattivaScript       ; and the scripts start again
                  lda   #SCR_VERBI           ; the verb panel the screen
                  jsr   StartScript          ; had wiped
                  clc
                  rts
 :male            sec
                  rts
+
+*=======================================================================
+* MettiDaParte / RiattivaScript - the scripts across a load
+*=======================================================================
+* The slot tables are written straight from the file, and one of those
+* slots is the disk screen itself, which still has to reach its
+* endCutscene. So it is put aside first and given back its place
+* afterwards, and whatever the saved game had in that slot is moved
+* somewhere else.
+*
+* Only the code's whereabouts are on disk, never the code: every script
+* that was running is read in again from the game's own files, into the
+* piece of the store its slot owns. Scripts that lived inside a room are
+* dropped - changing room throws those away in any case, and the room is
+* about to be entered again from the top.
+MettiDaParte     ldx   CurSlot
+                 lda   SlotNum,x
+                 sta   MioNum
+                 lda   SlotWhere,x
+                 sta   MioWhere
+                 lda   SlotPC,x
+                 sta   MioPC
+                 lda   SlotBaseT,x
+                 sta   MioBase
+                 lda   SlotDelLo,x
+                 sta   MioDelLo
+                 lda   SlotDelHi,x
+                 sta   MioDelHi
+                 rts
+
+RiattivaScript   ldx   CurSlot              ; what the file left in my slot
+                 lda   SlotStat,x
+                 sta   AltroStat
+                 lda   SlotNum,x
+                 sta   AltroNum
+                 lda   SlotPC,x
+                 sta   AltroPC
+                 lda   SlotWhere,x
+                 sta   AltroWhere
+                 lda   SlotDelLo,x
+                 sta   AltroDelLo
+                 lda   SlotDelHi,x
+                 sta   AltroDelHi
+
+                 ldx   CurSlot              ; and my own place back
+                 lda   #VIVO
+                 sta   SlotStat,x
+                 lda   MioNum
+                 sta   SlotNum,x
+                 lda   MioWhere
+                 sta   SlotWhere,x
+                 lda   MioPC
+                 sta   SlotPC,x
+                 lda   MioBase
+                 sta   SlotBaseT,x
+                 lda   MioDelLo
+                 sta   SlotDelLo,x
+                 lda   MioDelHi
+                 sta   SlotDelHi,x
+
+* the one that was thrown out finds another slot, if it was a real one
+                 lda   AltroStat
+                 beq   :nessunaltro
+                 lda   AltroWhere
+                 bne   :nessunaltro         ; only the global ones come back
+                 jsr   FreeSlot
+                 bcs   :nessunaltro
+                 asl   a
+                 tax
+                 lda   #VIVO
+                 sta   SlotStat,x
+                 lda   AltroNum
+                 sta   SlotNum,x
+                 stz   SlotWhere,x
+                 lda   AltroPC
+                 sta   SlotPC,x
+                 lda   AltroDelLo
+                 sta   SlotDelLo,x
+                 lda   AltroDelHi
+                 sta   SlotDelHi,x
+
+:nessunaltro     stz   RiIdx                ; now read every code back in
+:lp              ldx   RiIdx
+                 cpx   CurSlot
+                 beq   :prossimo
+                 lda   SlotStat,x
+                 beq   :prossimo
+                 lda   SlotWhere,x
+                 beq   :dalpool
+                 lda   #MORTO               ; room and object scripts go
+                 sta   SlotStat,x
+                 bra   :prossimo
+
+:dalpool         lda   SlotNum,x
+                 sta   ScrNo
+                 cmp   NumScr
+                 bcs   :buttalo
+                 asl   a
+                 tax
+                 lda   ScrOffs,x
+                 sta   ScrOff
+                 cmp   #$FFFF
+                 beq   :buttalo
+                 ora   #0
+                 beq   :buttalo
+                 ldx   ScrNo
+                 sep   #$20
+                 mx    %10
+                 lda   ScrRoom,x
+                 sta   ScrRm
+                 rep   #$20
+                 mx    %00
+                 lda   ScrRm
+                 and   #$00FF
+                 sta   FileNo
+                 lda   RiIdx
+                 lsr   a
+                 jsr   SlotBase
+                 sta   PoolOff
+                 jsr   LoadResource
+                 bcs   :buttalo
+                 ldx   RiIdx
+                 lda   PoolOff
+                 clc
+                 adc   #4                   ; past the resource header
+                 sta   SlotBaseT,x
+                 bra   :prossimo
+
+:buttalo         ldx   RiIdx
+                 lda   #MORTO
+                 sta   SlotStat,x
+:prossimo        lda   RiIdx
+                 clc
+                 adc   #2
+                 sta   RiIdx
+                 cmp   #SLOTS*2
+                 bcs   :basta
+                 brl   :lp
+:basta           rts
 
 *=======================================================================
 * SpegniAltri - stop every script except the one running
@@ -9885,7 +10032,7 @@ ChiudiPos        jsl   $E100A8
                  adrl  CloseParm
                  rts
 
-Firma            asc   'SCUMMGS1'
+Firma            asc   'SCUMMGS2'
 
 OpTab            anop
                  dw    hStop,hPutActor,hUnoB,hActorRoom   ; $00
@@ -10028,6 +10175,19 @@ NestSlot         ds    2      ; the slot to run here and now
 NestLiv          ds    2      ; how deep the nesting has gone
 NestNum          ds    2      ; which script the caller was
 NestWhere        ds    2      ; and where his code lived
+MioNum           ds    2      ; the disk screen's own slot,
+MioWhere         ds    2      ; put aside while the file is read
+MioPC            ds    2
+MioBase          ds    2
+MioDelLo         ds    2
+MioDelHi         ds    2
+AltroNum         ds    2      ; and what the file had in it
+AltroStat        ds    2
+AltroWhere       ds    2
+AltroPC          ds    2
+AltroDelLo       ds    2
+AltroDelHi       ds    2
+RiIdx            ds    2      ; the slot being read back in
 DiscoAperto      ds    2      ; the disk screen is open
 LuceA            ds    2      ; the numbers from lights()
 LuceB            ds    2
