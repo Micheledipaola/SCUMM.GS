@@ -1,0 +1,14 @@
+# Nothing of the game ever goes in here.
+data/
+*.LFL
+*.2mg
+src/fontdata.s
+tools/font_mm.bin
+
+build/
+stage/
+src/SCUMM
+src/*_Output.txt
+src/_FileInformation.txt
+__pycache__/
+*.pyc
