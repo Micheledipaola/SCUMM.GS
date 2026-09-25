@@ -2533,14 +2533,19 @@ CamMoved         lda   CamCur
                  sta   ScrollX
                  lda   #1                   ; changed: redraw everything
                  sta   Redraw
-* VAR_CAMERA_POS_X is in pixels, not in the units the scripts use for x
-* elsewhere: ScummVM assigns camera._cur.x to it untouched, and
-* setCameraAt multiplies the script's argument by eight on the way in.
-* Dividing it here made Edna's ambush wait for 47*8 pixels instead of 47:
-* she only noticed you once you were on top of her, with no room left to
-* run. Her script really does say "as soon as the camera is anywhere past
-* the left edge", because the camera never goes below half a screen.
+* VAR_CAMERA_POS_X is in the same units as x, not in pixels, and the
+* three scripts that read it all say so. Script 9 hands it straight back
+* to setCameraAt, which multiplies by eight: that only stands still if
+* the value was divided. Script 124 asks whether it equals 20, and 20 is
+* half a screen - the leftmost the camera ever goes. And Edna's script
+* 153 waits for 47, which in this kitchen is the sink, about where the
+* counter ends: pass it and she notices you, with the width of the room
+* still between you. In pixels 47 would be true before you had taken a
+* step, and she would set off the moment you came through the door.
 :uguale          lda   CamCur
+                 lsr   a
+                 lsr   a
+                 lsr   a
                  sta   Vars+VO_CAMPOS
                  rts
 
@@ -4215,9 +4220,24 @@ hClassOf         jsr   VOW1
                  rts
 
 *----- scripts ---------------------------------------------------------
+*=======================================================================
+* hStartScript ($42) - startScript: and it runs at once
+*=======================================================================
+* Not on the next frame: runScript ends with runScriptNested, so the
+* script that has just been started runs here and now, until it stops or
+* asks to wait, and only then does the one that started it carry on.
+* Waiting for the next frame put everything half a beat out of step.
+* Script 37 is where it showed: it sets Var[109], starts script 146 to
+* turn it into a place in the cell, and two instructions later puts the
+* captured kid at that place - which was still the previous one, so he
+* landed in the far corner instead of next to Edna.
 hStartScript     jsr   VOB1
                  jsr   StartScript
-                 stz   Esito
+                 bcs   :fine
+                 lda   SlotIdx
+                 sta   NestSlot
+                 jsr   GiraSubito
+:fine            stz   Esito
                  rts
 
 hStopScript      jsr   VOB1
@@ -5621,7 +5641,13 @@ RunObjScript     lda   ObjFound
 * list of saved games by calling the same script ten times in a row,
 * changing one variable each time. If they all started afterwards they
 * would all read the last value and a single name would be left.
-GiraSubito       lda   CurSlot              ; put aside the one running
+GiraSubito       lda   NestLiv              ; a script that keeps starting
+                 cmp   #8                   ; scripts must not eat the stack
+                 bcc   :c_eposto
+                 rts
+:c_eposto        inc   NestLiv
+
+                 lda   CurSlot              ; put aside the one running
                  pha
                  lda   PC
                  pha
@@ -5635,11 +5661,22 @@ GiraSubito       lda   CurSlot              ; put aside the one running
                  pha
                  lda   SlotFuori
                  pha
+                 ldx   CurSlot              ; and who he was, to tell later
+                 lda   SlotNum,x            ; whether he is still there
+                 pha
+                 lda   SlotWhere,x
+                 pha
+                 lda   PC                   ; his place in the code goes back
+                 sta   SlotPC,x             ; into the slot, as updateScriptPtr
 
                  stz   SlotFuori
                  lda   NestSlot
                  jsr   ExecSlot
 
+                 pla
+                 sta   NestWhere
+                 pla
+                 sta   NestNum
                  pla
                  sta   SlotFuori
                  pla
@@ -5654,6 +5691,24 @@ GiraSubito       lda   CurSlot              ; put aside the one running
                  sta   PC
                  pla
                  sta   CurSlot
+                 dec   NestLiv
+
+* runScriptNested picks the caller up again only if his slot still holds
+* the same script and it is still alive: the script we just ran may have
+* stopped him, or taken his slot for something else. Carrying on in his
+* place would then run whatever landed there.
+                 ldx   CurSlot
+                 lda   SlotStat,x
+                 beq   :sparito
+                 lda   SlotNum,x
+                 cmp   NestNum
+                 bne   :sparito
+                 lda   SlotWhere,x
+                 cmp   NestWhere
+                 bne   :sparito
+                 rts
+:sparito         lda   #1
+                 sta   SlotFuori
                  rts
 
 *=======================================================================
@@ -9970,6 +10025,9 @@ ClipY1           ds    2
 ClipY2           ds    2
 SpecialeOra      ds    2      ; a special doSentence verb
 NestSlot         ds    2      ; the slot to run here and now
+NestLiv          ds    2      ; how deep the nesting has gone
+NestNum          ds    2      ; which script the caller was
+NestWhere        ds    2      ; and where his code lived
 DiscoAperto      ds    2      ; the disk screen is open
 LuceA            ds    2      ; the numbers from lights()
 LuceB            ds    2
