@@ -37,22 +37,7 @@
                  use   4/Util.Macs
 
 *----- screen ----------------------------------------------------------
-* Nothing draws on the screen itself. Everything is drawn in bank $01,
-* which the hardware shadows onto $E1 when shadowing is on: see the
-* comment above Sbatti. While we draw, shadowing is off, so bank $01 is
-* ordinary fast memory; once a frame we turn shadowing back on and let
-* the hardware carry the pages that changed across.
-*
-* $01/$2000-$9FFF is not asked of the Memory Manager: it is the shadow
-* of the screen, so nobody else can be using it.
-SHRBASE          =     $012000
-SHRVERO          =     $E12000        ; where the picture really is
-SLAMBOCC         =     12             ; pages per bite, about three ms
-SHADOW           =     $E0C035        ; bit 3 set: no shadowing
-RAMRDON          =     $E0C003        ; reads of bank $00 $0200-$BFFF
-RAMRDOFF         =     $E0C002        ; come from bank $01 instead
-RAMWRTON         =     $E0C005        ; and the writes
-RAMWRTOFF        =     $E0C004
+SHRBASE          =     $E12000
 SCBOFF           =     $7D00
 PALOFF           =     $7E00
 SCRW             =     160            ; bytes per screen row
@@ -337,22 +322,6 @@ Start            phk
                  sta   zpCost+2
 
 *----- go --------------------------------------------------------------
-* From here on the picture is built in bank $01 and carried across once
-* a frame, so shadowing stays off while we draw: a shadowed write runs
-* at the slow speed.
-                 lda   #$0001               ; the block move writes into
-                 sta   MvnDove              ; the buffer in bank $01
-                 lda   #$7FFF
-                 sta   SlamLo
-                 stz   SlamHi
-                 sep   #$20
-                 mx    %10
-                 ldal  SHADOW
-                 ora   #$08
-                 stal  SHADOW
-                 rep   #$30
-                 mx    %00
-
                  jsr   ClearScreen
                  jsr   SetPalette
                  _InitCursor
@@ -447,10 +416,10 @@ MainLoop         jsr   Orologio
                  cmp   #2
                  beq   :pezzo
                  stz   Redraw
-                 jsr   DrawRoomReal
+                 jsr   DrawRoom
                  bra   :nodraw
 :pezzo           stz   Redraw
-                 jsr   BlitRettReal
+                 jsr   BlitRett
 :nodraw          jsr   GuardaVerbo          ; the verb under the pointer
                  cmp   VerbLast             ; lights up, as in the DOS version
                  beq   :stesso
@@ -507,10 +476,6 @@ MainLoop         jsr   Orologio
                  sta   Redraw               ; carries it: redraw everything
 :c_eluce         jsr   SayState
 
-* everything drawn this frame lives in bank $01: hand it to the shadow
-* hardware, which is the only thing that writes on the screen itself
-                 jsr   Schermo
-
                  PushWord #0
                  PushWord #$FFFF
                  PushPtr EventRec
@@ -522,12 +487,11 @@ MainLoop         jsr   Orologio
                  cmp   #1                   ; button pressed
                  bne   :nonclic
                  jsr   DoClick
-                 brl   :vivi
+                 bra   :vivi
 :nonclic         cmp   #3
                  beq   :tasto
                  cmp   #5
-                 beq   :tasto
-                 brl   :vivi
+                 bne   :vivi
 :tasto           lda   EvtMessage
                  and   #$00FF
                  cmp   #$1B
@@ -544,17 +508,11 @@ MainLoop         jsr   Orologio
                  beq   :stanzaGiu
                  cmp   #$3B                 ; semicolon: ten rooms forward
                  beq   :stanzaDieci
-                 cmp   #'b'                 ; B times the ways of drawing
-                 beq   :banco
-                 cmp   #'B'
-                 beq   :banco
                  cmp   #'d'                 ; D turns debug on and off
                  beq   :debug
                  cmp   #'D'
                  beq   :debug
                  jsr   TastoGioco
-                 brl   :vivi
-:banco           jsr   Banco
                  brl   :vivi
 :debug           lda   DbgOn
                  eor   #1
@@ -5161,13 +5119,14 @@ hCursor          jsr   VOW1
 *=======================================================================
 * PuliscoPan - blank the whole panel
 *=======================================================================
-PuliscoPan       anop
+PuliscoPan       _HideCursor
                  lda   #SENTTOP*SCRW
                  sta   FillStart
                  lda   #DBGTOP*SCRW
                  sta   FillEnd
                  lda   #$0000
                  jsr   FillArea
+                 _ShowCursor
                  rts
 
 *=======================================================================
@@ -6121,8 +6080,67 @@ SegnaRett        lda   Redraw
 :fine            rts
 
 *=======================================================================
-* BlitRettReal - blit only the marked rectangle to the buffer
+* BlitRett - blit only the marked rectangle to the screen
 *=======================================================================
+BlitRett         jsr   SottoIlPuntatore
+                 bcc   :libero
+                 _HideCursor
+                 jsr   BlitRettReal
+                 _ShowCursor
+                 rts
+:libero          jmp   BlitRettReal
+
+*=======================================================================
+* SottoIlPuntatore - does the dirty rectangle pass under the pointer?
+*=======================================================================
+* Hiding and showing QuickDraw's pointer on every frame makes it blink.
+* But that is only needed when what is about to be blitted passes under
+* it: the rectangle of a character walking on the other side of the
+* screen does not touch it.
+SottoIlPuntatore PushPtr PuntoMou
+                 _GetMouse
+                 lda   PuntoMou             ; the vertical comes first
+                 sta   CurY
+                 lda   PuntoMou+2
+                 sta   CurX
+
+                 lda   DirtyY               ; the rectangle is in coordinates
+                 clc                        ; of room: bring it all to
+                 adc   #ROOMTOP             ; screen
+                 sta   TmpW
+                 lda   CurY
+                 clc
+                 adc   #16                  ; the pointer's height
+                 cmp   TmpW
+                 bcc   :libero
+                 lda   DirtyB
+                 clc
+                 adc   #ROOMTOP
+                 cmp   CurY
+                 bcc   :libero
+
+                 lda   DirtyX
+                 sec
+                 sbc   ScrollX
+                 bpl   :sinok
+                 lda   #0
+:sinok           sta   TmpW
+                 lda   CurX
+                 clc
+                 adc   #16
+                 cmp   TmpW
+                 bcc   :libero
+                 lda   DirtyR
+                 sec
+                 sbc   ScrollX
+                 bmi   :libero
+                 cmp   CurX
+                 bcc   :libero
+                 sec
+                 rts
+:libero          clc
+                 rts
+
 BlitRettReal     lda   DirtyB               ; clip to what is visible
                  cmp   #ROOMROWS
                  bcc   :bassook
@@ -6165,19 +6183,6 @@ BlitRettReal     lda   DirtyB               ; clip to what is visible
                  sta   ByteCount            ; how many bytes, not how many times:
                                             ; the loop writes two at a time
 
-                 lda   DirtyY               ; the rows it is about to send
-                 clc
-                 adc   #ROOMTOP
-                 jsr   RigaSchermo
-                 sta   TmpW3
-                 lda   DirtyB
-                 clc
-                 adc   #ROOMTOP
-                 jsr   RigaSchermo
-                 tax
-                 lda   TmpW3
-                 jsr   Tocca
-
                  lda   DirtyY
                  sta   Riga
 :riga            lda   Riga
@@ -6219,8 +6224,13 @@ BlitRettReal     lda   DirtyB               ; clip to what is visible
                  rts
 
 *=======================================================================
-* DrawRoomReal - blit the whole window that starts at ScrollX
+* DrawRoom - blit the whole window that starts at ScrollX
 *=======================================================================
+DrawRoom         _HideCursor
+                 jsr   DrawRoomReal
+                 _ShowCursor
+                 rts
+
 DrawRoomReal     lda   RoomH
                  bne   :c_e
                  lda   ScrollX
@@ -6228,10 +6238,7 @@ DrawRoomReal     lda   RoomH
                  jsr   ClearScreen
                  rts
 
-:c_e             lda   #ROOMOFF             ; the whole window
-                 ldx   #PANOFF
-                 jsr   Tocca
-                 jsr   PreparaBuio
+:c_e             jsr   PreparaBuio
                  lda   ScrollX
                  sta   ScrollDis            ; from here on the screen shows
                  lsr   a                    ; this scroll position
@@ -6342,190 +6349,23 @@ DrawRoomReal     lda   RoomH
                  rts
 
 *=======================================================================
-* ClearScreen / SetPalette / FillArea
+* MvnRiga - one row of the picture, from the room buffer to the screen
 *=======================================================================
-ClearScreen      stz   FillStart
-                 lda   #PANEND
-                 sta   FillEnd
-                 lda   #$0000
-                 jsr   FillArea
-                 rts
-
-FillArea         pha
-                 lda   FillStart
-                 ldx   FillEnd
-                 jsr   Tocca
-                 pla
-                 ldx   FillStart
-:lp              stal  SHRBASE,x
-                 inx
-                 inx
-                 cpx   FillEnd
-                 bcc   :lp
-                 rts
-
-* V2 has sixteen colours and they are always the same: one palette,
-* written into all sixteen so nobody has to remember which one a
-* scanline uses.
-SetPalette       lda   #SCBOFF
-                 ldx   #PALOFF+512
-                 jsr   Tocca
-                 ldx   #0
-                 lda   #$0000
-:scb             stal  SHRBASE+SCBOFF,x
-                 inx
-                 inx
-                 cpx   #200
-                 bcc   :scb
-
-                 ldx   #0
-:pal             txa
-                 and   #$001F
-                 tay
-                 lda   EgaPal,y
-                 stal  SHRBASE+PALOFF,x
-                 inx
-                 inx
-                 cpx   #512
-                 bcc   :pal
-                 rts
-
-
-*=======================================================================
-* Tocca / Sbatti - the screen
-*=======================================================================
-* Nothing here writes to $E1. The picture is built in bank $01, at the
-* same offsets the screen uses, and once a frame the hardware is asked
-* to carry it across.
-*
-* The Apple IIGS shadows writes: with bit 3 of $C035 clear, everything
-* written to $2000-$9FFF of bank $01 is copied by the hardware into the
-* same place in $E1, which is the screen. Shadowed writes run at the
-* slow speed, so while we draw we keep shadowing off and bank $01 is
-* just fast memory.
-*
-* To make the hardware notice a page that is already there, the page is
-* written over itself. The fastest way to write on the 65816 is the
-* stack: PEI reads a word from the direct page and pushes it, six
-* cycles for two bytes, and it is the only instruction that reads and
-* writes without touching a register. So the direct page is put at the
-* start of the page and the stack at its end, and a hundred and
-* twenty-eight PEIs copy the page onto itself from the top down.
-*
-* Both the direct page and the stack are bank $00 addresses: $C005 and
-* $C003, the old IIe switches, send writes and reads of $0200-$BFFF to
-* bank $01 instead, which is what puts them where the picture is.
-* Interrupts have to be off while they are: an interrupt would push its
-* return address into the picture.
-*
-* Six cycles for two bytes against the twenty-nine of a copy loop.
-
-* Tocca - mark a stretch of the buffer as waiting
-* In: A = first byte, X = last byte + 1
-Tocca            phx
-                 xba
-                 and   #$00FF
-                 cmp   SlamLo
-                 bcs   :lok
-                 sta   SlamLo
-:lok             pla
-                 dec   a
-                 xba
-                 and   #$00FF
-                 cmp   #$0080               ; never past the shadowed area
-                 bcc   :dentro
-                 lda   #$007F
-:dentro          cmp   SlamHi
-                 bcc   :hok
-                 sta   SlamHi
-:hok             rts
-
-ToccaTutto       lda   #0
-                 ldx   #PANEND
-                 jmp   Tocca
-
-* Schermo - carry across whatever was marked, once a frame
-Schermo          lda   SlamLo
-                 cmp   SlamHi
-                 beq   :c_e
-                 bcc   :c_e
-                 rts
-:c_e             lda   SlamHi
-                 sec
-                 sbc   SlamLo
-                 inc   a
-                 sta   SlamN
-                 lda   SlamLo
-                 xba                        ; page number to address
-                 clc
-                 adc   #$2000
-                 sta   SlamA
-                 lda   #$7FFF
-                 sta   SlamLo
-                 stz   SlamHi
-
-                 jsr   SottoSlam            ; is the pointer in the way?
-                 bcc   :libero
-                 _HideCursor
-                 jsr   Sbatti
-                 _ShowCursor
-                 rts
-:libero          jmp   Sbatti
-
-* SottoSlam - does what is about to be slammed pass under the pointer?
-* QuickDraw draws the arrow straight onto $E1, so a slam over it would
-* rub it out and leave QuickDraw holding the wrong background.
-SottoSlam        PushPtr PuntoMou
-                 _GetMouse
-                 lda   PuntoMou             ; the vertical comes first
-                 sta   CurY
-                 lda   PuntoMou+2
-                 sta   CurX
-
-                 lda   CurY
-                 jsr   RigaSchermo
-                 sta   SlamC1               ; first byte of the pointer
-                 lda   CurY
-                 clc
-                 adc   #16                  ; and the one past its foot
-                 cmp   #200
-                 bcc   :giuok
-                 lda   #200
-:giuok           jsr   RigaSchermo
-                 sta   SlamC2
-
-                 lda   SlamA                ; the slam, in the same terms
-                 sec
-                 sbc   #$2000
-                 sta   SlamT
-                 cmp   SlamC2
-                 bcs   :libero              ; it starts below the pointer
-                 lda   SlamN                ; pages to bytes
-                 xba
-                 and   #$FF00
-                 clc
-                 adc   SlamT                ; one past its last byte
-                 cmp   SlamC1
-                 beq   :libero
-                 bcc   :libero              ; it ends above the pointer
-                 sec
-                 rts
-:libero          clc
-                 rts
-
-* MvnRiga - one row from the room buffer into the screen buffer
 * In: MvnS = where it comes from, MvnD = where it goes, MvnC = how many
 *     bytes, less one
-* A block move does seven cycles a byte where the copy loop did
-* twenty-nine every two: the loop spent more than half its time
-* advancing indices and comparing.
 *
-* But it only moves inside one bank, where a long pointer carries into
-* the next by itself, and the room buffer is wherever the Memory Manager
-* put it: sixty thousand bytes from there can easily straddle two banks.
-* So the address is worked out in full every row, the bank goes into the
-* instruction, and the one row that would run off the end is copied the
-* old way.
+* A block move does seven cycles a byte where the copy loop did
+* twenty-nine every two: sixteen of those twenty-nine were iny, inx, cpx
+* and bcc, that is advancing and comparing rather than moving pixels. On
+* the machine it came out at 12.9 cycles a byte against 17.7, because
+* writing on $E1 costs more than the instructions do.
+*
+* But a block move stays inside one bank, where a long pointer carries
+* into the next by itself, and the Memory Manager puts the sixty-thousand
+* byte room buffer wherever it likes: the last rows of a wide room fall
+* on the other side. So the address is worked out in full every row, the
+* bank goes into the instruction, and the one row that would run off the
+* end is copied the old way.
 MvnRiga          lda   MvnS
                  clc
                  adc   zpPix
@@ -6543,27 +6383,22 @@ MvnRiga          lda   MvnS
                  clc
                  adc   MvnRip
                  sta   MvnBanco
-                 lda   MvnDove              ; $01 always, except when the
-                 sta   MvnBancoD            ; bench is timing $E1
                  rep   #$30
                  mx    %00
                  ldx   MvnX
                  lda   MvnD
                  clc
-                 adc   #$2000               ; the buffer inside bank $01
+                 adc   #$2000               ; the screen inside bank $E1
                  tay
                  lda   MvnC
                  jmp   MvnMove
 
-MvnMove          mvn   $02,$01              ; the source bank is written in
+MvnMove          mvn   $02,$E1              ; the source bank is written in
                  phk                        ; the move leaves its own bank
                  plb                        ; in the data bank register
                  rts
 MvnBanco         =     MvnMove+2
-MvnBancoD        =     MvnMove+1
 
-* (this one always writes into the buffer: the bench's $E1 pass will put
-*  one row in the wrong place, which the redraw afterwards undoes)
 MvnPiedi         ldy   MvnS
                  ldx   MvnD
                  lda   MvnC
@@ -6583,386 +6418,45 @@ MvnPiedi         ldy   MvnS
                  bcc   :pix
                  rts
 
-* Sbatti - the slam itself
-* In: SlamA = first page, SlamN = how many
-* A whole room is eighty pages, and with interrupts off that long the
-* machine would start losing sixtieths of a second. So it goes a bite at
-* a time, each one shorter than a tick.
-Sbatti           lda   SlamN
-                 bne   :c_e
-                 rts
-:c_e             cmp   #SLAMBOCC
-                 bcc   :piccolo
-                 lda   #SLAMBOCC
-:piccolo         sta   SlamB
-                 lda   SlamN
-                 sec
-                 sbc   SlamB
-                 sta   SlamN
-
-                 php
-                 sei
-                 tdc
-                 sta   SlamD
-                 tsc
-                 sta   SlamS
-
-                 sep   #$20
-                 mx    %10
-                 ldal  SHADOW
-                 and   #$F7                 ; shadowing on
-                 stal  SHADOW
-                 stal  RAMWRTON             ; writes to bank $01
-                 stal  RAMRDON              ; and reads
-                 rep   #$30
-                 mx    %00
-
-:pagina          lda   SlamA
-                 tcd                        ; the page, read from here
-                 clc
-                 adc   #$00FF
-                 tcs                        ; and written from the top down
-                 pei   $FE
-                 pei   $FC
-                 pei   $FA
-                 pei   $F8
-                 pei   $F6
-                 pei   $F4
-                 pei   $F2
-                 pei   $F0
-                 pei   $EE
-                 pei   $EC
-                 pei   $EA
-                 pei   $E8
-                 pei   $E6
-                 pei   $E4
-                 pei   $E2
-                 pei   $E0
-                 pei   $DE
-                 pei   $DC
-                 pei   $DA
-                 pei   $D8
-                 pei   $D6
-                 pei   $D4
-                 pei   $D2
-                 pei   $D0
-                 pei   $CE
-                 pei   $CC
-                 pei   $CA
-                 pei   $C8
-                 pei   $C6
-                 pei   $C4
-                 pei   $C2
-                 pei   $C0
-                 pei   $BE
-                 pei   $BC
-                 pei   $BA
-                 pei   $B8
-                 pei   $B6
-                 pei   $B4
-                 pei   $B2
-                 pei   $B0
-                 pei   $AE
-                 pei   $AC
-                 pei   $AA
-                 pei   $A8
-                 pei   $A6
-                 pei   $A4
-                 pei   $A2
-                 pei   $A0
-                 pei   $9E
-                 pei   $9C
-                 pei   $9A
-                 pei   $98
-                 pei   $96
-                 pei   $94
-                 pei   $92
-                 pei   $90
-                 pei   $8E
-                 pei   $8C
-                 pei   $8A
-                 pei   $88
-                 pei   $86
-                 pei   $84
-                 pei   $82
-                 pei   $80
-                 pei   $7E
-                 pei   $7C
-                 pei   $7A
-                 pei   $78
-                 pei   $76
-                 pei   $74
-                 pei   $72
-                 pei   $70
-                 pei   $6E
-                 pei   $6C
-                 pei   $6A
-                 pei   $68
-                 pei   $66
-                 pei   $64
-                 pei   $62
-                 pei   $60
-                 pei   $5E
-                 pei   $5C
-                 pei   $5A
-                 pei   $58
-                 pei   $56
-                 pei   $54
-                 pei   $52
-                 pei   $50
-                 pei   $4E
-                 pei   $4C
-                 pei   $4A
-                 pei   $48
-                 pei   $46
-                 pei   $44
-                 pei   $42
-                 pei   $40
-                 pei   $3E
-                 pei   $3C
-                 pei   $3A
-                 pei   $38
-                 pei   $36
-                 pei   $34
-                 pei   $32
-                 pei   $30
-                 pei   $2E
-                 pei   $2C
-                 pei   $2A
-                 pei   $28
-                 pei   $26
-                 pei   $24
-                 pei   $22
-                 pei   $20
-                 pei   $1E
-                 pei   $1C
-                 pei   $1A
-                 pei   $18
-                 pei   $16
-                 pei   $14
-                 pei   $12
-                 pei   $10
-                 pei   $0E
-                 pei   $0C
-                 pei   $0A
-                 pei   $08
-                 pei   $06
-                 pei   $04
-                 pei   $02
-                 pei   $00
-                 lda   SlamA
-                 clc
-                 adc   #$0100
-                 sta   SlamA
-                 dec   SlamB
-                 beq   :fatto
-                 brl   :pagina
-
-:fatto           sep   #$20
-                 mx    %10
-                 stal  RAMWRTOFF
-                 stal  RAMRDOFF
-                 ldal  SHADOW
-                 ora   #$08                 ; shadowing off again
-                 stal  SHADOW
-                 rep   #$30
-                 mx    %00
-                 lda   SlamD
-                 tcd
-                 lda   SlamS
-                 tcs
-                 plp
-                 lda   SlamN
-                 beq   :finito
-                 brl   Sbatti
-:finito          rts
-
-
 *=======================================================================
-* Banco - how long each way of getting a picture on the screen takes
+* ClearScreen / SetPalette / FillArea
 *=======================================================================
-* Everything is drawn in bank $01 now, and the shadow hardware carries
-* it across. Whether that is faster than writing straight onto $E1
-* depends on how much the machine slows a write to the video banks, and
-* that is a question only the machine can answer. So: four passes over
-* the same window, timed on the sixtieth-of-a-second counter.
-*
-*   1. the block move into bank $01, which is what happens now
-*   2. the slam that carries the same window across
-*   3. the same block move, but straight onto $E1
-*   4. the copy loop onto $E1, which is how it was done before
-*
-* Press B inside a room. The four numbers come out on the bottom line,
-* in sixtieths of a second for BANCOG passes. 1+2 against 3 says whether
-* drawing in bank $01 is worth it; 4 against 3 says what the block move
-* was worth.
-BANCOG           =     20             ; passes per measurement
-
-Banco            lda   RoomH
-                 bne   :c_e
-                 rts
-:c_e             jsr   BancoOra
-                 lda   #BANCOG
-                 sta   BancoN
-:uno             jsr   BancoMvn1
-                 dec   BancoN
-                 bne   :uno
-                 jsr   BancoDopo
-                 sta   BancoT1
-
-                 jsr   BancoOra
-                 lda   #BANCOG
-                 sta   BancoN
-:due             lda   #$2000+ROOMOFF       ; only the window, so that it
-                 sta   SlamA                ; matches the other three
-                 lda   #80                  ; (PANOFF-ROOMOFF)/256
-                 sta   SlamN
-                 jsr   Sbatti
-                 dec   BancoN
-                 bne   :due
-                 jsr   BancoDopo
-                 sta   BancoT2
-
-                 jsr   BancoOra
-                 lda   #BANCOG
-                 sta   BancoN
-:tre             jsr   BancoMvn
-                 dec   BancoN
-                 bne   :tre
-                 jsr   BancoDopo
-                 sta   BancoT3
-
-                 jsr   BancoOra
-                 lda   #BANCOG
-                 sta   BancoN
-:qua             jsr   BancoE1
-                 dec   BancoN
-                 bne   :qua
-                 jsr   BancoDopo
-                 sta   BancoT4
-
-                 lda   #1                   ; put the room back
-                 sta   Redraw
-                 jsr   DrawRoomReal
-                 jsr   Schermo
-                 jsr   DrawBanco            ; the next frame carries the
-                 rts                        ; numbers across
-
-BancoOra         PushLong #0
-                 _GetTick
-                 PullLong Tick
-                 lda   Tick
-                 sta   BancoT0
-                 rts
-
-BancoDopo        PushLong #0
-                 _GetTick
-                 PullLong Tick
-                 lda   Tick
-                 sec
-                 sbc   BancoT0
-                 cmp   #1000                ; DrawNum stops at three digits
-                 bcc   :ok
-                 lda   #999
-:ok              rts
-
-* one pass over the window, into the buffer in bank $01
-BancoMvn1        jsr   BancoVia
-:riga            lda   SrcRow
-                 sta   MvnS
-                 lda   DstRow
-                 sta   MvnD
-                 lda   #SCRW-1
-                 sta   MvnC
-                 jsr   MvnRiga
-                 jsr   BancoAvanti
-                 bne   :riga
-                 rts
-
-* the copy loop the blit used before, straight onto the screen
-BancoE1          jsr   BancoVia
-:riga            ldy   SrcRow
-                 ldx   DstRow
-:pix             lda   [zpPix],y
-                 stal  SHRVERO,x
-                 iny
-                 iny
-                 inx
-                 inx
-                 cpx   FineRiga
-                 bcc   :pix
-                 jsr   BancoAvanti
-                 bne   :riga
-                 rts
-
-* the same block move, but writing on $E1 instead of the buffer: the
-* only difference between this and the first measurement is the bank
-BancoMvn         lda   #$00E1
-                 sta   MvnDove
-                 jsr   BancoVia
-:riga            lda   SrcRow
-                 sta   MvnS
-                 lda   DstRow
-                 sta   MvnD
-                 lda   #SCRW-1
-                 sta   MvnC
-                 jsr   MvnRiga
-                 jsr   BancoAvanti
-                 bne   :riga
-                 lda   #$0001
-                 sta   MvnDove
-                 rts
-
-BancoVia         lda   ScrollX
-                 lsr   a
-                 sta   SrcRow
-                 lda   #ROOMOFF
-                 sta   DstRow
-                 lda   #ROOMOFF2
-                 sta   FineRiga
-                 lda   #ROOMROWS
-                 sta   BancoR
-                 rts
-
-BancoAvanti      lda   SrcRow
-                 clc
-                 adc   Pitch
-                 sta   SrcRow
-                 lda   DstRow
-                 clc
-                 adc   #SCRW
-                 sta   DstRow
-                 clc
-                 adc   #SCRW
-                 sta   FineRiga
-                 dec   BancoR
-                 rts
-
-DrawBanco        lda   #DBGTOP*SCRW
-                 sta   FillStart
+ClearScreen      stz   FillStart
                  lda   #PANEND
                  sta   FillEnd
                  lda   #$0000
                  jsr   FillArea
-                 stz   TxtX
-                 lda   #DBGTOP
-                 sta   TxtY
-                 lda   #MsgBanco
-                 jsr   ScriviDbg
-                 lda   BancoT1
-                 jsr   DrawNum
-                 lda   #MsgSpazio
-                 jsr   ScriviDbg
-                 lda   BancoT2
-                 jsr   DrawNum
-                 lda   #MsgSpazio
-                 jsr   ScriviDbg
-                 lda   BancoT3
-                 jsr   DrawNum
-                 lda   #MsgSpazio
-                 jsr   ScriviDbg
-                 lda   BancoT4
-                 jsr   DrawNum
+                 rts
+
+FillArea         ldx   FillStart
+:lp              stal  SHRBASE,x
+                 inx
+                 inx
+                 cpx   FillEnd
+                 bcc   :lp
+                 rts
+
+* V2 has sixteen colours and they are always the same: one palette,
+* written into all sixteen so nobody has to remember which one a
+* scanline uses.
+SetPalette       ldx   #0
+                 lda   #$0000
+:scb             stal  SHRBASE+SCBOFF,x
+                 inx
+                 inx
+                 cpx   #200
+                 bcc   :scb
+
+                 ldx   #0
+:pal             txa
+                 and   #$001F
+                 tay
+                 lda   EgaPal,y
+                 stal  SHRBASE+PALOFF,x
+                 inx
+                 inx
+                 cpx   #512
+                 bcc   :pal
                  rts
 
 *=======================================================================
@@ -7221,6 +6715,95 @@ ObjCdDaIdx       clc
                  tay
                  lda   [zpRaw],y
                  rts
+
+*=======================================================================
+* BlitRect - send only the rectangle that changed to the screen
+*=======================================================================
+* Redrawing the whole picture for one door opening would be a waste:
+* twenty thousand bytes against a few hundred.
+BlitRect         lda   BlkH
+                 bne   :c_e
+                 rts
+:c_e             lda   DstX                 ; does it all fit in the window?
+                 cmp   ScrollX
+                 bcs   :destra
+:tutto           lda   #1                   ; overflows: might as well take it all
+                 sta   Redraw
+                 rts
+:destra          clc
+                 adc   BlkW
+                 sec
+                 sbc   ScrollX
+                 cmp   #SCRPIX+1
+                 bcs   :tutto
+
+                 lda   DstX
+                 lsr   a
+                 sta   ColByte              ; column in the buffer
+                 lda   DstX
+                 sec
+                 sbc   ScrollX
+                 lsr   a
+                 sta   TmpW                 ; column on screen
+                 lda   BlkW
+                 lsr   a
+                 sta   TmpW2                ; how many bytes per row
+
+                 lda   DstY                 ; row * 160
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 sta   RigaScr
+                 asl   a
+                 asl   a
+                 clc
+                 adc   RigaScr
+                 clc
+                 adc   TmpW
+                 sta   RigaScr
+                 lda   DstY
+                 sta   Riga
+
+:riga            lda   Riga
+                 cmp   #ROOMROWS
+                 bcs   :fine
+                 asl   a
+                 tax
+                 lda   RowOff,x
+                 clc
+                 adc   ColByte
+                 tay
+                 ldx   RigaScr
+                 stz   ContaB
+:pix             lda   [zpPix],y
+                 stal  SHRBASE,x
+                 iny
+                 iny
+                 inx
+                 inx
+                 inc   ContaB
+                 inc   ContaB
+                 lda   ContaB
+                 cmp   TmpW2
+                 bcc   :pix
+
+                 lda   RigaScr
+                 clc
+                 adc   #SCRW
+                 sta   RigaScr
+                 inc   Riga
+                 lda   Riga
+                 sec
+                 sbc   DstY
+                 cmp   BlkH
+                 bcc   :riga
+:fine            rts
+
+*=======================================================================
+* DrawRoom - blit the whole window that starts at ScrollX
+*=======================================================================
 
 *=======================================================================
 * The remaining opcodes: consume the arguments and take note
@@ -8318,8 +7901,9 @@ DrawVerbs        lda   UserIface
                  and   #$0080
                  bne   :mostra
                  rts
-:mostra          anop
+:mostra          _HideCursor
                  jsr   DrawVerbsReal
+                 _ShowCursor
                  rts
 
 DrawVerbsReal    lda   #VERBTOP*SCRW
@@ -8396,7 +7980,7 @@ DrawFrase        lda   UserIface
                  and   #$0020
                  bne   :mostra
                  rts
-:mostra          anop
+:mostra          _HideCursor
                  lda   #SENTTOP*SCRW
                  sta   FillStart
                  lda   #VERBTOP*SCRW
@@ -8404,6 +7988,7 @@ DrawFrase        lda   UserIface
                  lda   #$0000
                  jsr   FillArea
                  jsr   DrawFraseReal
+                 _ShowCursor
                  rts
 
 DrawFraseReal    lda   SentHot
@@ -8581,7 +8166,7 @@ DrawInv          lda   UserIface
                  and   #$0040
                  bne   :mostra
                  rts
-:mostra          anop
+:mostra          _HideCursor
                  lda   #INVTOP*SCRW
                  sta   FillStart
                  lda   #DBGTOP*SCRW
@@ -8589,6 +8174,7 @@ DrawInv          lda   UserIface
                  lda   #$0000
                  jsr   FillArea
                  jsr   DrawInvReal
+                 _ShowCursor
                  rts
 
 * Two rows by two columns, as in the DOS version: on the left from 0 to
@@ -8681,13 +8267,6 @@ FRECCIAW         =     8                    ; bytes: sixteen pixels
 
 DisegnaFreccia   sta   FrecciaY
                  stx   FrecciaVerso
-                 jsr   RigaSchermo          ; the seven rows it covers
-                 sta   TmpW3
-                 clc
-                 adc   #7*SCRW
-                 tax
-                 lda   TmpW3
-                 jsr   Tocca
                  stz   FrecciaR
 :riga            lda   FrecciaR             ; how wide this row is: the tip
                  cmp   #7                   ; is one pixel, the base sixteen
@@ -8957,12 +8536,13 @@ GuardaVerbo      PushPtr PuntoMou
 * Loading a room on the IIGS takes nearly a second. Without this the last
 * frame of the previous one stays on screen the whole time, and it reads
 * as a freeze.
-SpegniScena      anop
+SpegniScena      _HideCursor
                  stz   FillStart
                  lda   #PANOFF
                  sta   FillEnd
                  lda   #$0000
                  jsr   FillArea
+                 _ShowCursor
                  jsr   DrawMsg              ; and away with the old sentence,
                  rts                        ; at once: not when loading ends
 
@@ -9680,14 +9260,6 @@ DrawChar         and   #$007F
                  adc   TxtOff
                  sta   TxtOff
 
-                 lda   TxtOff               ; the eight rows of the letter
-                 sta   TmpW3
-                 clc
-                 adc   #8*SCRW
-                 tax
-                 lda   TmpW3
-                 jsr   Tocca
-
                  stz   Conta8
 :riga            ldx   FontIdx
                  sep   #$20
@@ -9782,8 +9354,9 @@ DrawStr          ldy   #0
 *=======================================================================
 * DrawMsg - the panel below: the game's message and the credit line
 *=======================================================================
-DrawMsg          anop
+DrawMsg          _HideCursor
                  jsr   DrawMsgReal
+                 _ShowCursor
                  rts
 
 DrawMsgReal      stz   FillStart            ; the two rows at the top
@@ -9822,8 +9395,9 @@ DrawMsgReal      stz   FillStart            ; the two rows at the top
 * In V2 it is three pieces: the line of the sentence being built, the
 * verb panel, and the four inventory boxes. Plus a line at the bottom
 * that we use for faults.
-DrawPannello     anop
+DrawPannello     _HideCursor
                  jsr   DrawPannelloReal
+                 _ShowCursor
                  rts
 
 DrawPannelloReal lda   #PANOFF
@@ -9844,7 +9418,7 @@ DrawPannelloReal lda   #PANOFF
 *=======================================================================
 * DrawGuasto - the last line: missing opcodes and room number
 *=======================================================================
-DrawDbg          anop
+DrawDbg          _HideCursor
                  lda   #DBGTOP*SCRW
                  sta   FillStart
                  lda   #PANEND
@@ -9852,6 +9426,7 @@ DrawDbg          anop
                  lda   #$0000
                  jsr   FillArea
                  jsr   DrawGuasto
+                 _ShowCursor
                  rts
 
 DrawGuasto       lda   BadOp
@@ -10150,14 +9725,7 @@ DiskError        _InitCursor
                  bra   Shutdown
 
 NoMem            anop
-Shutdown         sep   #$20                 ; give shadowing back: whoever
-                 mx    %10                  ; comes after us expects it on
-                 ldal  SHADOW
-                 and   #$F7
-                 stal  SHADOW
-                 rep   #$30
-                 mx    %00
-                 _EMShutDown
+Shutdown         _EMShutDown
                  _QDShutDown
                  _MTShutDown
                  lda   #0
@@ -10308,8 +9876,6 @@ MsgL             asc   ' L'
 MsgK             asc   ' k'
                  dfb   0
 MsgSpazio        asc   ' '
-                 dfb   0
-MsgBanco         asc   'B '
                  dfb   0
 MsgRoom          asc   'room '
                  dfb   0
@@ -11017,32 +10583,13 @@ DirtyY           ds    2
 DirtyR           ds    2                    ; right edge
 DirtyB           ds    2                    ; bottom edge
 
-* the slam: which pages of the buffer are waiting to reach the screen
-SlamLo           ds    2                    ; first page, $7FFF when none
-SlamHi           ds    2                    ; last page
-SlamA            ds    2                    ; the page being slammed
-SlamN            ds    2                    ; how many are left
-SlamD            ds    2                    ; our direct page, put aside
-SlamS            ds    2                    ; and our stack
-SlamB            ds    2                    ; pages left in this bite
-MvnS             ds    2
+MvnS             ds    2                    ; the block move's row
 MvnD             ds    2
 MvnC             ds    2
 MvnX             ds    2
 MvnRip           ds    2
 MvnN             ds    2
 MvnI             ds    2
-MvnDove          ds    2                    ; the bank the move writes to
-BancoN           ds    2
-BancoR           ds    2
-BancoT0          ds    2
-BancoT1          ds    2
-BancoT2          ds    2
-BancoT3          ds    2
-BancoT4          ds    2
-SlamT            ds    2
-SlamC1           ds    2                    ; the pointer, in buffer bytes
-SlamC2           ds    2
 
 PC               ds    2
 Op               ds    2
@@ -11227,7 +10774,6 @@ PtoX             ds    2                    ; the point to look for a verb at
 PtoY             ds    2
 PuntoMou         ds    4                    ; where the IIGS writes the pointer
 TmpW2            ds    2
-TmpW3            ds    2
 NameLen          ds    2
 
 SentVerb         ds    {6}*2

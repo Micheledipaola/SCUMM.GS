@@ -81,32 +81,45 @@ eight bytes each, one byte per row, leftmost pixel in bit 7.
 
 ## The screen
 
-Nothing draws on the screen. Everything is built in bank `$01` at the offsets the
-screen uses, and once a frame the shadow hardware carries it across: with bit 3 of
-`$C035` clear, a write to `$2000-$9FFF` of bank `$01` is copied by the hardware into
-the same place in `$E1`. While the frame is being drawn shadowing is off, so bank
-`$01` is ordinary fast memory — a shadowed write runs at the slow speed.
+The picture is built in a buffer the size of a room, one byte for every
+two pixels, and the visible window is moved onto the screen a row at a time
+with `MVN`, the 65816's block move: seven cycles a byte, one instruction a
+row. The copy loop it replaced spent sixteen of its twenty-nine cycles per
+two bytes on advancing indices and comparing.
 
-To make the hardware notice a page that is already there, the page is written over
-itself, and the fastest way to write on a 65816 is the stack. `PEI` reads a word from
-the direct page and pushes it: six cycles for two bytes, and the only instruction that
-reads and writes without going through a register. So the direct page goes to the
-start of the page and the stack to its end, and a hundred and twenty-eight `PEI`s copy
-the page onto itself from the top down. Both are bank `$00` addresses, which is what
-`$C005` and `$C003` are for: they send writes and reads of `$0200-$BFFF` to bank `$01`
-instead. Interrupts have to be off while they are, or an interrupt would push its
-return address into the picture — so it goes twelve pages at a time, each bite shorter
-than a sixtieth of a second.
+A block move stays inside one bank, though, where a long pointer carries
+into the next by itself, and the Memory Manager puts the sixty-thousand-byte
+room buffer wherever it likes: the last rows of a wide room fall on the
+other side. So the address is worked out in full every row, the source bank
+goes into the instruction, and the one row that would run off the end is
+copied the old way.
 
-`$01/$2000-$9FFF` is not asked of the Memory Manager. It is the shadow of the screen,
-so nobody else can be using it.
+### What the machine said about shadowing
 
-Only the pages that changed are carried across: every routine that draws marks the
-stretch it touched. Whether this is faster than writing straight onto `$E1` depends on
-how much the machine slows a write to the video banks, which is not something an
-emulator can answer — pressing **B** inside a room times four ways of filling the
-window against the sixtieth-of-a-second counter and prints the numbers on the bottom
-line.
+The obvious next step looked like the PEI slam: draw everything in bank
+`$01` with shadowing off, then let the shadow hardware carry it to `$E1`
+by writing each changed page over itself with `PEI` - six cycles for two
+bytes, against the twenty-nine of a copy loop.
+
+It was built, and measured on the machine rather than argued about. Twenty
+passes over the room window, in sixtieths of a second:
+
+| | | cycles/byte |
+|---|---|---|
+| `MVN` into bank `$01` | 74 | 8.4 |
+| the slam onto `$E1` | 53 | 6.0 |
+| `MVN` straight onto `$E1` | 113 | 12.9 |
+| the old copy loop onto `$E1` | 155 | 17.7 |
+
+8.4 + 6.0 against 12.9: **the slam loses**. It pays when the same area is
+written several times between two slams, and this engine writes it once -
+the room is composed in its own buffer and the window goes across in one
+pass. So the drawing goes straight onto `$E1`, and the slam is in the
+history of this repository rather than in the code.
+
+The emulator learned shadowing and the `$C002`-`$C005` switches for that
+experiment, and kept them: they cost nothing and the next person to wonder
+about this can try it without building the model again.
 
 ## The tools
 
