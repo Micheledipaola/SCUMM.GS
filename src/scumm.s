@@ -35,6 +35,7 @@
                  use   4/Misc.Macs
                  use   4/Event.Macs
                  use   4/Qd.Macs
+                 use   4/Sound.Macs
 
 *----- screen ----------------------------------------------------------
 SHRBASE          =     $E12000
@@ -107,6 +108,7 @@ XMOVE0           =     $FFB8          ; -72: V2's fixed offset
 YMOVE0           =     $FF9C          ; -100
 VAR_HAVEMSG      =     3              ; "there is a message on screen"
 VAR_CHARCNT      =     7              ; how many letters have come out
+VAR_LAST_SOUND   =     37
 VAR_BACKVERB     =     38             ; the verb to fall back to after a sentence
 VAR_KEY          =     39             ; the key pressed, as V2 counts it
 VAR_SENTVERB     =     26
@@ -133,6 +135,11 @@ MAXOBJ           =     800
 MAXSCR           =     256
 MAXCOS           =     64
 MAXSND           =     128
+SFXDIR           =     1032           ; GSFX header plus 128 entries of 8
+SFXPLAY          =     $8000          ; one 32K DOC bank at a time
+SFXALLOC         =     $8100          ; 32K plus a page for alignment
+SFXGEN           =     $0101          ; ch 0, generator 1, free-form (TN #37)
+SFXSTOP          =     $0002          ; bitmask: generator 1
 
 VAR_ROOM         =     4
 VAR_LIGHTS       =     12
@@ -171,6 +178,7 @@ VO_BACKVERB       =     VAR_BACKVERB*2
 VO_HAVEMSG        =     VAR_HAVEMSG*2
 VO_CHARCNT        =     VAR_CHARCNT*2
 VO_KEY            =     VAR_KEY*2
+VO_LASTSND        =     VAR_LAST_SOUND*2
 
 MORTO            =     0
 VIVO             =     1
@@ -189,6 +197,7 @@ OpenGS           =     $2010
 ReadGS           =     $2012
 WriteGS          =     $2013
 CloseGS          =     $2014
+GetEOFGS         =     $2019
 
 * The save-game disk
 NPOS             =     10             ; the slots on disk, Game A..J
@@ -209,6 +218,7 @@ zpBg             =     $18            ; the room without objects, to put them ba
 zpCost           =     $1C            ; the costume store
 zpMask           =     $20            ; the mask: who is in front of whom
 zpNome           =     $24            ; the description whose name we want
+zpSfx            =     $28            ; packed Amiga samples (SFX file)
 
 *=======================================================================
 Start            phk
@@ -228,7 +238,7 @@ Start            phk
 *----- six direct pages: three for QuickDraw, one for the Event --------
 *      Manager, and the last one is ours.
                  PushLong #0
-                 PushLong #$0600
+                 PushLong #$0700
                  PushWord MyID
                  PushWord #$C005
                  PushLong #0
@@ -260,6 +270,11 @@ Start            phk
                  PushWord #200
                  PushWord MyID
                  _EMStartUp
+
+                 lda   DPAddr
+                 clc
+                 adc   #$0600
+                 sta   SndDP
 
                  lda   DPAddr
                  clc
@@ -335,10 +350,12 @@ Start            phk
                  ldx   #$1104               ; in the dark too (SetCursor)
                  jsl   $E10000
 
+                 jsr   AvviaSuono
                  jsr   LoadIndex
                  bcc   :indexok
                  brl   DiskError
-:indexok         jsr   ResetVM
+:indexok         jsr   LoadSfx
+                 jsr   ResetVM
 
 * At power-on the lights are on: variable 12 starts at zero, which means
 * pitch dark, and without this the title screen came up black.
@@ -356,6 +373,7 @@ Start            phk
 
 *=======================================================================
 MainLoop         jsr   Orologio
+                 jsr   SuonoTick
                  jsr   MsgTick
                  jsr   RunScripts
                  jsr   CheckSentence
@@ -402,9 +420,11 @@ MainLoop         jsr   Orologio
                  beq   :luceok
                  lda   BuioStato            ; it was lit: darkening is only a
                  bne   :bastacomporre       ; matter of composing again
-                 jsr   DecodeRoom           ; it was dark, and the black was
-:bastacomporre   lda   #1                   ; laid on the room itself: the
-                 sta   DaComporre           ; background has to come back
+                 jsr   AltezzaByte          ; it was dark: zpPix was blacked,
+                 sta   CopyLen              ; zpBg still has the room
+                 jsr   CopiaBgPix
+:bastacomporre   lda   #1
+                 sta   DaComporre           ; objects go back on top
 :luceok          lda   DaComporre
                  beq   :compostook
                  jsr   ComponiStanza
@@ -750,13 +770,17 @@ ChiediRestart    _HideCursor
                  bne   :attendi
 :no              jsr   DrawRoom
                  jsr   DrawMsg
+                 clc
                  rts
-:si              jmp   RiavviaGioco
+:si              jsr   RiavviaGioco
+                 sec
+                 rts
 
 *=======================================================================
 * RiavviaGioco - same start as after LoadIndex
 *=======================================================================
-RiavviaGioco     jsr   SpegniMsg
+RiavviaGioco     jsr   StopSfx
+                 jsr   SpegniMsg
                  jsr   ResetVM
                  lda   #11
                  sta   Vars+VO_LIGHTS
@@ -1010,10 +1034,19 @@ LoadIndex        stz   FileNo
 
                  ldy   #4
                  ldx   #0
+                 lda   #0
+:azzera          sta   ObjFlag,x
+                 sta   ObjInit,x
+                 inx
+                 inx
+                 cpx   #MAXOBJ
+                 bcc   :azzera
+                 ldx   #0
                  sep   #$20
                  mx    %10
 :obj             lda   [zpRaw],y
                  sta   ObjFlag,x
+                 sta   ObjInit,x
                  iny
                  inx
                  cpx   NumObj
@@ -1254,6 +1287,421 @@ OpenLFL          lda   FileNo
 TryOpen          jsl   $E100A8
                  dw    OpenGS
                  adrl  OpenParm
+                 rts
+
+*=======================================================================
+* Sound: Amiga samples via the Sound Manager free-form synth. Music no.
+*=======================================================================
+AvviaSuono       stz   SndOn
+                 stz   SfxOn
+                 stz   PlayingId
+                 stz   SndWaitT
+                 stz   SndWaitId
+                 stz   SndTried
+                 stz   SndPlays
+                 stz   SndErr
+                 stz   SfxErr
+                 PushWord #8
+                 PushWord #0
+                 _LoadOneTool
+                 bcc   :tool
+                 lda   #1                   ; no TOOL.008 on this boot
+                 sta   SndErr
+                 rts
+:tool            lda   SndDP
+                 pha
+                 _SoundStartUp
+                 bcc   :ok
+                 lda   #2                   ; SoundStartUp refused the DP
+                 sta   SndErr
+                 rts
+:ok              lda   #1
+                 sta   SndOn
+                 rts
+
+LoadSfx          stz   SfxOn
+                 stz   zpSfx
+                 stz   zpSfx+2
+                 stz   SfxErr
+                 lda   #$FFFF
+                 sta   SfxHave
+                 jsr   ApriSfxI
+                 bcc   :aperto
+                 lda   #3                   ; MM/SFXI not found
+                 sta   SfxErr
+                 rts
+:aperto          anop
+                 PushLong #SFXDIR
+                 PushWord #$C000
+                 jsr   GetBlock
+                 bcc   :gotidx
+                 lda   #4                   ; no RAM for the index
+                 sta   SfxErr
+                 bra   :chiudi
+:gotidx          lda   BlockLo
+                 sta   zpSfx
+                 lda   BlockHi
+                 sta   zpSfx+2
+                 sta   ReadBuf+2
+                 lda   BlockLo
+                 sta   ReadBuf
+                 lda   #SFXDIR
+                 sta   ReadCount
+                 stz   ReadCount+2
+                 jsr   ReadAndClose
+                 ldy   #0
+                 lda   [zpSfx],y
+                 cmp   #$5347               ; 'G','S'
+                 bne   :nomagic
+                 iny
+                 iny
+                 lda   [zpSfx],y
+                 cmp   #$5846               ; 'F','X'
+                 bne   :nomagic
+                 PushLong #SFXALLOC
+                 PushWord #$C000
+                 jsr   GetBlock
+                 bcc   :gotplay
+                 lda   #6                   ; no RAM for a 32K bank
+                 sta   SfxErr
+                 rts
+:gotplay         lda   BlockLo
+                 clc
+                 adc   #255                 ; DOC wants a 256-byte page
+                 and   #$FF00
+                 sta   SfxPlayLo
+                 lda   BlockHi
+                 sta   SfxPlayHi
+                 lda   #1
+                 sta   SfxOn
+                 jsr   PrefetchClk          ; clock bank, before the foyer
+                 rts
+:nomagic         lda   #5                   ; SFXI is not GSFX
+                 sta   SfxErr
+                 rts
+:chiudi          jsl   $E100A8
+                 dw    CloseGS
+                 adrl  CloseParm
+                 rts
+
+ApriSfxI         lda   #PathSfxI
+                 sta   OpenPath
+                 lda   #^PathSfxI
+                 sta   OpenPath+2
+                 jsr   TryOpen
+                 bcc   :ok
+                 lda   #PathSfxI2
+                 sta   OpenPath
+                 lda   #^PathSfxI2
+                 sta   OpenPath+2
+                 jsr   TryOpen
+                 bcs   :no
+:ok              lda   OpenRef
+                 sta   ReadRef
+                 sta   CloseRef
+                 clc
+                 rts
+:no              sec
+                 rts
+
+ApriSfxB         lda   SndBank
+                 clc
+                 adc   #'0'
+                 sep   #$20
+                 sta   PathSfx+8
+                 sta   PathSfx2+10
+                 rep   #$20
+                 lda   #PathSfx
+                 sta   OpenPath
+                 lda   #^PathSfx
+                 sta   OpenPath+2
+                 jsr   TryOpen
+                 bcc   :ok
+                 lda   #PathSfx2
+                 sta   OpenPath
+                 lda   #^PathSfx2
+                 sta   OpenPath+2
+                 jsr   TryOpen
+                 bcs   :no
+:ok              lda   OpenRef
+                 sta   ReadRef
+                 sta   CloseRef
+                 clc
+                 rts
+:no              sec
+                 rts
+
+* Load the bank that holds sound 28 so the first foyer ticks are not
+* eaten by a 32K GS/OS read.
+PrefetchClk      lda   SfxOn
+                 beq   :no
+                 lda   #28
+                 asl   a
+                 asl   a
+                 asl   a
+                 clc
+                 adc   #8
+                 tay
+                 iny
+                 iny                        ; pages
+                 lda   [zpSfx],y
+                 and   #$00FF
+                 beq   :no
+                 iny
+                 iny                        ; vol / bank
+                 lda   [zpSfx],y
+                 xba
+                 and   #$00FF
+                 sta   SndBank
+                 jsr   ApriSfxB
+                 bcs   :no
+                 lda   SfxPlayLo
+                 sta   ReadBuf
+                 lda   SfxPlayHi
+                 sta   ReadBuf+2
+                 lda   #SFXPLAY
+                 sta   ReadCount
+                 stz   ReadCount+2
+                 jsr   ReadAndClose
+                 lda   SndBank
+                 sta   SfxHave
+:no              rts
+
+StopSfx          lda   SndOn
+                 beq   :fine
+                 PushWord #$FFFF            ; all generators
+                 _FFStopSound
+                 stz   PlayingId
+:fine            rts
+
+SuonoTick        lda   SndWaitT
+                 beq   :nowait
+                 sec
+                 sbc   Elapsed
+                 beq   :fuoco
+                 bcc   :fuoco
+                 sta   SndWaitT
+                 bra   :nowait
+:fuoco           stz   SndWaitT
+                 lda   SndWaitId
+                 stz   SndWaitId
+                 sta   SndWant
+                 jsr   PlayOra              ; delayed comet / door, not through PlaySfx
+:nowait          lda   PlayingId
+                 beq   :fine
+                 lda   SndLoop
+                 bne   :fine
+                 pha
+                 PushWord #1                ; generator number, not the mode word
+                 _FFSoundDoneStatus
+                 pla
+                 beq   :fine
+                 stz   PlayingId
+:fine            rts
+
+* GSFX index: 8-byte header then 128 records of 8:
+* +0 freq, +2 pages (lo) / flags (hi), +4 vol (lo) / bank (hi),
+* +6 page in the 32K bank. Samples live in MM/SFX0..n, one bank each.
+
+PlaySfx          sta   SndWant
+                 sta   Vars+VO_LASTSND
+                 inc   SndTried
+                 lda   SfxOn
+                 bne   :s1
+                 rts
+:s1              lda   SndOn
+                 bne   :s2
+                 rts
+:s2              lda   SndWant
+                 bne   :s3
+                 rts
+:s3              cmp   #MAXSND
+                 bcc   :s4
+                 rts
+:s4              cmp   #56                  ; comet: the script fires this
+                 bne   :chkd                ; long before the meteor reaches the hill
+                 lda   SndWaitId
+                 cmp   #56
+                 beq   :giaatt
+                 lda   #500
+                 sta   SndWaitT
+                 lda   #56
+                 sta   SndWaitId
+:giaatt          rts
+:chkd            cmp   #8
+                 beq   :porta
+                 cmp   #9
+                 bne   :subito
+:porta           lda   #1                   ; a hair after the graphic
+                 sta   SndWaitT
+                 lda   SndWant
+                 sta   SndWaitId
+                 rts
+:subito          stz   SndWaitT
+                 stz   SndWaitId
+PlayOra          jsr   StopSfx
+                 lda   SndWant
+                 asl   a
+                 asl   a
+                 asl   a                    ; *8
+                 clc
+                 adc   #8
+                 tay
+                 lda   [zpSfx],y            ; freq
+                 sta   FFFreq
+                 iny
+                 iny
+                 lda   [zpSfx],y            ; pages / flags
+                 sta   FFPages
+                 and   #$00FF
+                 beq   :no
+                 lda   [zpSfx],y
+                 xba
+                 and   #$00FF
+                 sta   SndLoop
+                 iny
+                 iny
+                 lda   [zpSfx],y            ; vol / bank
+                 and   #$00FF
+                 sta   SndVol
+                 lda   [zpSfx],y
+                 xba
+                 and   #$00FF
+                 sta   SndBank
+                 iny
+                 iny
+                 lda   [zpSfx],y
+                 and   #$00FF
+                 sta   SndPage
+                 lda   SndBank
+                 cmp   SfxHave
+                 beq   :gia
+                 jsr   ApriSfxB
+                 bcc   :load
+:no              rts
+:load            anop
+                 lda   SfxPlayLo
+                 sta   ReadBuf
+                 lda   SfxPlayHi
+                 sta   ReadBuf+2
+                 lda   #SFXPLAY
+                 sta   ReadCount
+                 stz   ReadCount+2
+                 jsr   ReadAndClose
+                 lda   SndBank
+                 sta   SfxHave
+:gia             lda   SndWant
+                 cmp   #54                  ; kids: first 2 pages, Start: the high note
+                 bne   :lunghi
+                 lda   #2
+                 sta   FFPages
+                 jsr   ChiStart
+                 bcc   :due
+                 lda   SndPage
+                 clc
+                 adc   #2
+                 sta   SndPage
+:due             lda   #2
+                 bra   :corto
+:lunghi          lda   SndWant
+                 cmp   #57                  ; impact / comet whoosh: the body is at the end
+                 beq   :coda
+                 cmp   #56
+                 beq   :coda
+                 lda   FFPages
+                 and   #$00FF
+                 cmp   #9
+                 bcc   :corto
+                 lda   #8                   ; long wave: first 2K (no IRQ)
+                 bra   :corto
+:coda            lda   FFPages
+                 and   #$00FF
+                 cmp   #9
+                 bcc   :corto
+                 sec
+                 sbc   #8
+                 clc
+                 adc   SndPage
+                 sta   SndPage
+                 lda   #8
+:corto           sta   FFPages
+                 lda   SndPage
+                 xba                        ; page * 256
+                 clc
+                 adc   SfxPlayLo
+                 sta   FFWave
+                 lda   SfxPlayHi
+                 adc   #0
+                 sta   FFWave+2
+                 lda   #$0800
+                 sta   FFBuf
+                 lda   #$2000
+                 sta   FFDoc
+                 lda   SndVol
+                 sta   FFVol
+                 stz   FFNext
+                 stz   FFNext+2
+                 jsr   StopSfx
+                 PushWord #SFXGEN
+                 PushPtr FFSynth
+                 _FFStartSound
+                 inc   SndPlays
+                 lda   SndWant
+                 sta   PlayingId
+                 rts
+
+* Carry set if this click is the kid-select Start button (object 395 or 403).
+ChiStart         ldx   CurSlot
+                 lda   SlotNum,x
+                 jsr   EStartId
+                 bcs   :si
+                 lda   ObjFound
+                 jsr   EStartId
+                 bcs   :si
+                 lda   Vars+VO_ACTOBJ1
+                 jsr   EStartId
+:si              rts
+EStartId         cmp   #395
+                 beq   :yes
+                 cmp   #403
+                 beq   :yes
+                 clc
+                 rts
+:yes             sec
+                 rts
+
+hStartSound      jsr   VOB1
+                 jsr   PlaySfx
+                 stz   Esito
+                 rts
+
+hStopSound       jsr   VOB1
+                 cmp   SndWaitId
+                 bne   :play
+                 stz   SndWaitT
+                 stz   SndWaitId
+:play            cmp   PlayingId
+                 bne   :fine
+                 jsr   StopSfx
+:fine            stz   Esito
+                 rts
+
+hIsSound         jsr   FetchB
+                 jsr   ResolveVar
+                 stx   DestVar
+                 jsr   VOB1
+                 ldx   DestVar
+                 cmp   PlayingId
+                 bne   :zero
+                 lda   PlayingId
+                 beq   :zero
+                 lda   #1
+                 sta   Vars,x
+                 stz   Esito
+                 rts
+:zero            lda   #0
+                 sta   Vars,x
+                 stz   Esito
                  rts
 
 *=======================================================================
@@ -2382,12 +2830,13 @@ ResetVM          ldx   #0
                  stz   CostNext
 
                  ldx   #0
-                 lda   #0
-:obj             sta   ObjFlag,x
+:obj             lda   ObjInit,x
+                 sta   ObjFlag,x
                  inx
                  inx
                  cpx   #MAXOBJ
                  bcc   :obj
+                 lda   #0
                  ldx   #0
 :inv             sta   InvObj,x
                  inx
@@ -2910,6 +3359,16 @@ hBad             lda   Op
                  rts
 
 hNop             stz   Esito
+                 rts
+
+* $98 is o2_restart: no operands. Apple-8 asks first; the opcode does
+* the same. After a yes the VM must not keep reading the old script:
+* ResetVM has already killed this slot, but ExecSlot would still step.
+hRestart         jsr   ChiediRestart
+                 bcc   :no
+                 lda   #1
+                 sta   SlotFuori
+:no              stz   Esito
                  rts
 
 *=======================================================================
@@ -6519,7 +6978,14 @@ LeggiObj         lda   #28                  ; the first table holds the
 *=======================================================================
 * PuliscoRett - put the clean background back where the object is
 *=======================================================================
-PuliscoRett      lda   BlkW
+* In the dark zpBg still holds the lit room (so the light switch can
+* restore it). Copying it here is what left a trail of doorway and floor
+* behind the kid in the library.
+PuliscoRett      lda   Vars+VO_LIGHTS
+                 and   #6
+                 bne   :luce
+                 jmp   NeroRett
+:luce            lda   BlkW
                  lsr   a
                  sta   TmpW2                ; bytes to copy per row
                  beq   :fine
@@ -6570,6 +7036,40 @@ PuliscoRett      lda   BlkW
                  cpx   TmpW2
                  bcc   :pix
                  bra   :okriga
+
+* NeroRett - the same rectangle, black, for a dark room
+NeroRett         lda   BlkW
+                 lsr   a
+                 sta   TmpW2
+                 beq   :fine
+                 lda   DstX
+                 lsr   a
+                 sta   ColByte
+                 lda   DstY
+                 sta   Riga
+:riga            lda   Riga
+                 asl   a
+                 tax
+                 lda   RowOff,x
+                 clc
+                 adc   ColByte
+                 tay
+                 ldx   #0
+                 lda   #0
+:pix             sta   [zpPix],y
+                 iny
+                 iny
+                 inx
+                 inx
+                 cpx   TmpW2
+                 bcc   :pix
+                 inc   Riga
+                 lda   Riga
+                 sec
+                 sbc   DstY
+                 cmp   BlkH
+                 bcc   :riga
+:fine            rts
 
 *=======================================================================
 * AggiornaOggetto - redraw an object when its state changes
@@ -9386,12 +9886,86 @@ MostraCarico     lda   #15
                  sta   zpStr
                  lda   #^MsgLoad
                  sta   zpStr+2
+                 jsr   DrawStrCenter
+                 rts
+
+* snd / sfx / te (LoadOneTool+StartUp) / se (SFXI) / n (plays)
+MostraAudio      jsr   CompilaAudio
+                 lda   TxtY
+                 clc
+                 adc   #10
+                 sta   TxtY
+                 lda   #15
+                 jsr   SetTextColor
+                 lda   #MsgAudio
+                 sta   zpStr
+                 lda   #^MsgAudio
+                 sta   zpStr+2
                  jmp   DrawStrCenter
+
+CompilaAudio     lda   SndOn
+                 and   #$000F
+                 ora   #'0'
+                 sep   #$20
+                 sta   MsgAudio+4
+                 rep   #$20
+                 lda   SfxOn
+                 and   #$000F
+                 ora   #'0'
+                 sep   #$20
+                 sta   MsgAudio+10
+                 rep   #$20
+                 lda   SndErr
+                 and   #$000F
+                 ora   #'0'
+                 sep   #$20
+                 sta   MsgAudio+15
+                 rep   #$20
+                 lda   SfxErr
+                 and   #$000F
+                 ora   #'0'
+                 sep   #$20
+                 sta   MsgAudio+20
+                 rep   #$20
+                 lda   SndPlays
+                 jsr   DueCifre
+                 sep   #$20
+                 lda   TmpW
+                 sta   MsgAudio+24
+                 rep   #$20
+                 txa
+                 sep   #$20
+                 sta   MsgAudio+25
+                 rep   #$20
+                 rts
+
+DueCifre         ldx   #'0'
+:lp              cmp   #10
+                 bcc   :u
+                 sec
+                 sbc   #10
+                 inx
+                 bra   :lp
+:u               ora   #'0'
+                 stx   TmpW
+                 tax
+                 rts
 
 *=======================================================================
 * ChangeRoom - A = room number
 *=======================================================================
-ChangeRoom       sta   CurRoom
+ChangeRoom       pha                        ; new room
+                 lda   CurRoom
+                 beq   :noex                ; first room: nothing to leave
+                 cmp   1,s
+                 beq   :noex
+                 jsr   EseguiUscita         ; EXCD while the old file is still here
+                 lda   PlayingId            ; foyer clock must not follow you
+                 cmp   #28
+                 bne   :noex
+                 jsr   StopSfx
+:noex            pla
+                 sta   CurRoom
                  sta   Vars+VO_ROOM
                  pha
                  jsr   SpegniMsg            ; the old sentence no longer applies
@@ -9421,7 +9995,9 @@ ChangeRoom       sta   CurRoom
                  lda   CurRoom
                  sta   FileNo
                  jsr   LoadWhole
-                 bcs   :vuota
+                 bcc   :caricata
+                 brl   :vuota
+:caricata        anop
 
                  jsr   DecodeRoom
                  stz   ScrollX              ; a new room starts from the left
@@ -9452,14 +10028,19 @@ ChangeRoom       sta   CurRoom
 
                  lda   #1
                  sta   Redraw
+                 stz   Vars+VO_LIGHTS       ; previous room's lights must not
+                                            ; paint this one before ENCD
 
-* and the room's entry script, if there is one
+* and the room's entry script, if there is one. Nested, so lights()
+* from startScript(50) has already run when the main loop composes:
+* otherwise the library shows one lit frame, then goes dark.
                  ldy   #$1A
                  lda   [zpRaw],y
                  beq   :fine
                  sta   EnterOff
                  jsr   FreeSlot
                  bcs   :fine
+                 sta   NestSlot
                  asl   a
                  tax
                  lda   #VIVO
@@ -9474,12 +10055,39 @@ ChangeRoom       sta   CurRoom
                  sta   SlotDelHi,x
                  lda   EnterOff
                  sta   SlotPC,x
+                 jsr   GiraSubito
 :fine            rts
 :vuota           stz   RoomW
                  stz   RoomH
                  lda   #1
                  sta   Redraw
                  rts
+
+* V2 room header: EXCD at $18, ENCD at $1A. The exit must run now, nested,
+* so stopScript(18) can kill the foyer clock before the kitchen is loaded.
+EseguiUscita     ldy   #$18
+                 lda   [zpRaw],y
+                 beq   :no
+                 sta   EnterOff
+                 jsr   FreeSlot
+                 bcs   :no
+                 sta   NestSlot
+                 asl   a
+                 tax
+                 lda   #VIVO
+                 sta   SlotStat,x
+                 lda   #DA_STANZA
+                 sta   SlotWhere,x
+                 lda   #$7FFE
+                 sta   SlotNum,x
+                 lda   #0
+                 sta   SlotBaseT,x
+                 sta   SlotDelLo,x
+                 sta   SlotDelHi,x
+                 lda   EnterOff
+                 sta   SlotPC,x
+                 jsr   GiraSubito
+:no              rts
 
 *=======================================================================
 * DecodeRoom - the background, the clean copy, and the lit objects on top
@@ -9803,8 +10411,8 @@ AltezzaByte      lda   RoomH
                  rts
 
 *=======================================================================
-* ZeroRoomBuf - black zpPix and zpBg (dark room). Overlapping MVN
-*               when the block stays in one bank.
+* ZeroRoomBuf - black zpPix only. zpBg keeps the decoded room so turning
+* the light on can copy it back instead of decompressing again.
 *=======================================================================
 ZeroRoomBuf      lda   CopyLen
                  beq   :fine
@@ -9815,14 +10423,9 @@ ZeroRoomBuf      lda   CopyLen
                  clc
                  adc   CopyLen
                  bcs   :lento
-                 lda   zpBg
-                 clc
-                 adc   CopyLen
-                 bcs   :lento
                  ldy   #0
                  lda   #0
                  sta   [zpPix],y
-                 sta   [zpBg],y
                  lda   CopyLen
                  sec
                  sbc   #3
@@ -9843,27 +10446,10 @@ ZeroRoomBuf      lda   CopyLen
 :mv1             mvn   $00,$00
                  phk
                  plb
-                 lda   zpBg
-                 tax
-                 clc
-                 adc   #2
-                 tay
-                 sep   #$20
-                 mx    %10
-                 lda   zpBg+2
-                 sta   :mv2+1
-                 sta   :mv2+2
-                 rep   #$30
-                 mx    %00
-                 lda   MvnC
-:mv2             mvn   $00,$00
-                 phk
-                 plb
                  rts
 :lento           ldy   #0
                  lda   #0
 :lp              sta   [zpPix],y
-                 sta   [zpBg],y
                  iny
                  iny
                  cpy   CopyLen
@@ -9891,6 +10477,31 @@ CopiaPixBg       lda   CopyLen
                  ldy   #0
 :lp              lda   [zpPix],y
                  sta   [zpBg],y
+                 iny
+                 iny
+                 cpy   CopyLen
+                 bcc   :lp
+:fine            rts
+
+* CopiaBgPix - put the clean background back into zpPix (lights on)
+CopiaBgPix       lda   CopyLen
+                 beq   :fine
+                 dec   a
+                 sta   MvnC
+                 stz   MvnS
+                 lda   zpBg
+                 sta   MvnPtrS
+                 lda   zpPix
+                 sta   MvnPtrD
+                 lda   zpBg+2
+                 sta   MvnSrcB
+                 lda   zpPix+2
+                 sta   MvnDstB
+                 jsr   MvnZp
+                 bcc   :fine
+                 ldy   #0
+:lp              lda   [zpBg],y
+                 sta   [zpPix],y
                  iny
                  iny
                  cpy   CopyLen
@@ -10928,7 +11539,12 @@ DiskError        _InitCursor
                  bra   Shutdown
 
 NoMem            anop
-Shutdown         _EMShutDown
+Shutdown         lda   SndOn
+                 beq   :nosnd
+                 PushWord #$FFFF
+                 _FFStopSound
+                 _SoundShutDown
+:nosnd           _EMShutDown
                  _QDShutDown
                  _MTShutDown
                  lda   #0
@@ -10967,6 +11583,19 @@ MarkPos          adrl  $00000000
 CloseParm        dw    $0001
 CloseRef         dw    $0000
 
+EofParm          dw    2
+EofRef           dw    $0000
+EofLen           ds    4
+
+FFSynth          anop
+FFWave           adrl  $00000000
+FFPages          dw    $0000
+FFFreq           dw    $0000
+FFDoc            dw    $0000
+FFBuf            dw    $0000                ; bytes, power of two (TN #37)
+FFNext           adrl  $00000000
+FFVol            dw    $0000                ; 0-255, after nextWave
+
 CreateParm       dw    $0004
 CreatePath       adrl  $00000000
                  dw    $00C3                ; access: everything allowed
@@ -10994,6 +11623,14 @@ PathA            dw    10
                  asc   'MM/L00.LFL'
 PathB            dw    12
                  asc   '1/MM/L00.LFL'
+PathSfxI         dw    7
+                 asc   'MM/SFXI'
+PathSfxI2        dw    9
+                 asc   '1/MM/SFXI'
+PathSfx          dw    7
+                 asc   'MM/SFX0'
+PathSfx2         dw    9
+                 asc   '1/MM/SFX0'
 
 * And the saved games, in the same folder. The digit is rewritten in
 * PathS1+9 and PathS2+11.
@@ -11097,6 +11734,8 @@ MsgCred1         asc   'Porting to IIGS: Michele Di Paola'
 MsgCred2         asc   'aka TheDIPO! / JeDiCrack'
                  dfb   0
 MsgLoad          asc   'Loading...'
+                 dfb   0
+MsgAudio         asc   'snd:0 sfx:0 te:0 se:0 n:00'
                  dfb   0
 MsgQuit1         asc   'Quit the game?'
                  dfb   0
@@ -11604,7 +12243,7 @@ OpTab            anop
                  dw    hGetOwner,hAnimate,hPanCamera,hActorOps   ; $10
                  dw    hPrint,hActorFromPos,hRandom,hClearState   ; $14
                  dw    hGoto,hSentence,hMove,hSetBit   ; $18
-                 dw    hUnoB,hClassOf,hWalkTo,hUnlessState   ; $1C
+                 dw    hStartSound,hClassOf,hWalkTo,hUnlessState   ; $1C
                  dw    hNop,hPutActor,hSaveLoad,hGetActY   ; $20
                  dw    hRoomEgo,hDrawObject,hVarRange,hSetState   ; $24
                  dw    hUnless,hSetOwner,hAddInd,hUnoB   ; $28
@@ -11612,7 +12251,7 @@ OpTab            anop
                  dw    hBoxFlags,hGetBit,hSetCamera,hRoomOps   ; $30
                  dw    hGetDist,hFindObject,hWalkToObj,hSetState   ; $34
                  dw    hUnless,hSentence,hSub,hWaitActor   ; $38
-                 dw    hUnoB,hDueB,hWalkTo,hUnlessState   ; $3C
+                 dw    hStopSound,hDueB,hWalkTo,hUnlessState   ; $3C
                  dw    hCutscene,hPutActor,hStartScript,hGetActX   ; $40
                  dw    hUnless,hDrawObject,hInc,hClearState   ; $44
                  dw    hUnless,hFaceActor,hChainScript,hObjPrep   ; $48
@@ -11628,15 +12267,15 @@ OpTab            anop
                  dw    hLights,hGetCostume,hLoadRoom,hRoomOps   ; $70
                  dw    hGetDist,hFindObject,hWalkToObj,hClearState   ; $74
                  dw    hUnless,hSentence,hVerbOps,hGetBox   ; $78
-                 dw    hResB,hDueB,hWalkTo,hUnlessState   ; $7C
+                 dw    hIsSound,hDueB,hWalkTo,hUnlessState   ; $7C
                  dw    hBreak,hPutActor,hUnoB,hActorRoom   ; $80
                  dw    hUnless,hDrawObject,hResB,hSetState   ; $84
                  dw    hUnless,hFaceActor,hMoveInd,hObjPrep   ; $88
                  dw    hRes,hWalkActor,hPutAtObj,hUnlessState   ; $8C
                  dw    hGetOwner,hAnimate,hPanCamera,hActorOps   ; $90
                  dw    hPrint,hActorFromPos,hRandom,hClearState   ; $94
-                 dw    hNop,hSentence,hMove,hSetBit   ; $98
-                 dw    hUnoB,hClassOf,hWalkTo,hUnlessState   ; $9C
+                 dw    hRestart,hSentence,hMove,hSetBit   ; $98
+                 dw    hStartSound,hClassOf,hWalkTo,hUnlessState   ; $9C
                  dw    hStop,hPutActor,hSaveLoad,hGetActY   ; $A0
                  dw    hRoomEgo,hDrawObject,hVarRange,hSetState   ; $A4
                  dw    hUnless,hSetOwner,hAddInd,hUnoB   ; $A8
@@ -11644,7 +12283,7 @@ OpTab            anop
                  dw    hBoxFlags,hGetBit,hSetCamera,hRoomOps   ; $B0
                  dw    hGetDist,hFindObject,hWalkToObj,hSetState   ; $B4
                  dw    hUnless,hSentence,hSub,hWaitActor   ; $B8
-                 dw    hUnoB,hDueB,hWalkTo,hUnlessState   ; $BC
+                 dw    hStopSound,hDueB,hWalkTo,hUnlessState   ; $BC
                  dw    hEndCut,hPutActor,hStartScript,hGetActX   ; $C0
                  dw    hUnless,hDrawObject,hInc,hClearState   ; $C4
                  dw    hUnless,hFaceActor,hChainScript,hObjPrep   ; $C8
@@ -11660,7 +12299,7 @@ OpTab            anop
                  dw    hLights,hGetCostume,hLoadRoom,hRoomOps   ; $F0
                  dw    hGetDist,hFindObject,hWalkToObj,hClearState   ; $F4
                  dw    hUnless,hSentence,hVerbOps,hGetBox   ; $F8
-                 dw    hResB,hDueB,hWalkTo,hUnlessState   ; $FC
+                 dw    hIsSound,hDueB,hWalkTo,hUnlessState   ; $FC
 
 * The EGA palette: its values 0, 85, 170 and 255 become 0, 5, 10 and 15
 * on the IIGS with nothing lost.
@@ -12177,12 +12816,32 @@ MskData          ds    2
 Vars             ds    {256}*2
 BitVars          ds    512
 ObjFlag          ds    {800}
+ObjInit          ds    {800}
 ScrRoom          ds    {256}
 ScrOffs          ds    {256}*2
 CosRoom          ds    {64}
 CosOffs          ds    {64}*2
 SndRoom          ds    {128}
 SndOffs          ds    {128}*2
+SndOn            ds    2
+SfxOn            ds    2
+SndErr           ds    2
+SfxErr           ds    2
+SndTried         ds    2
+SndPlays         ds    2
+SndDP            ds    2
+PlayingId        ds    2
+SndWant          ds    2
+SndWaitT         ds    2
+SndWaitId        ds    2
+SndLen           ds    2
+SndLoop          ds    2
+SfxPlayLo        ds    2
+SfxPlayHi        ds    2
+SfxHave          ds    2
+SndBank          ds    2
+SndPage          ds    2
+SndVol           ds    2
 
 SlotNum          ds    {12}*2
 SlotStat         ds    {12}*2

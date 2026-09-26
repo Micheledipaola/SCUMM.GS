@@ -57,9 +57,19 @@ if ! ls stage/MM/L??.LFL >/dev/null 2>&1; then
   exit 1
 fi
 
+echo "==> Amiga SFX (no music), GSFX banks"
+AMIGA_2MG="${AMIGA_2MG:-$ROOT/../altri SCUMM/SCUMM-AMIGA.2mg}"
+rm -f stage/MM/SFX stage/MM/SFXI stage/MM/SFX[0-9]
+if [ -f "$AMIGA_2MG" ]; then
+  python3 "$ROOT/tools/sfx_amiga.py" --from-2mg "$AMIGA_2MG" stage/MM/SFX
+else
+  echo "No Amiga disk at $AMIGA_2MG — SFX omitted"
+fi
+
 echo "SCUMM=Type(B3),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)" \
   > stage/_FileInformation.txt
-for f in stage/MM/L??.LFL; do
+for f in stage/MM/L??.LFL stage/MM/SFX*; do
+  [ -f "$f" ] || continue
   echo "$(basename "$f")=Type(06),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)"
 done > stage/MM/_FileInformation.txt
 
