@@ -340,6 +340,8 @@ Start            phk
 * From here on the picture is built in bank $01 and carried across once
 * a frame, so shadowing stays off while we draw: a shadowed write runs
 * at the slow speed.
+                 lda   #$0001               ; the block move writes into
+                 sta   MvnDove              ; the buffer in bank $01
                  lda   #$7FFF
                  sta   SlamLo
                  stz   SlamHi
@@ -6203,18 +6205,12 @@ BlitRettReal     lda   DirtyB               ; clip to what is visible
                  adc   ColScr
                  tax
 
-                 stz   TmpW2
-:pix             lda   [zpPix],y
-                 stal  SHRBASE,x
-                 iny
-                 iny
-                 inx
-                 inx
-                 inc   TmpW2
-                 inc   TmpW2
-                 lda   TmpW2
-                 cmp   ByteCount
-                 bcc   :pix
+                 stx   MvnD                 ; X is where it goes on screen,
+                 sty   MvnS                 ; Y where it comes from
+                 lda   ByteCount
+                 dec   a
+                 sta   MvnC
+                 jsr   MvnRiga
 
                  inc   Riga
                  lda   Riga
@@ -6301,14 +6297,14 @@ DrawRoomReal     lda   RoomH
                  sta   FineCopia
 :prova           cpx   FineCopia
                  bcs   :avanza
-:pix             lda   [zpPix],y
-                 stal  SHRBASE,x
-                 iny
-                 iny
-                 inx
-                 inx
-                 cpx   FineCopia
-                 bcc   :pix
+                 stx   MvnD
+                 sty   MvnS
+                 lda   FineCopia
+                 sec
+                 sbc   MvnD
+                 dec   a                    ; the move counts from zero
+                 sta   MvnC
+                 jsr   MvnRiga
 
 :avanza          lda   SrcRow
                  clc
@@ -6517,6 +6513,76 @@ SottoSlam        PushPtr PuntoMou
 :libero          clc
                  rts
 
+* MvnRiga - one row from the room buffer into the screen buffer
+* In: MvnS = where it comes from, MvnD = where it goes, MvnC = how many
+*     bytes, less one
+* A block move does seven cycles a byte where the copy loop did
+* twenty-nine every two: the loop spent more than half its time
+* advancing indices and comparing.
+*
+* But it only moves inside one bank, where a long pointer carries into
+* the next by itself, and the room buffer is wherever the Memory Manager
+* put it: sixty thousand bytes from there can easily straddle two banks.
+* So the address is worked out in full every row, the bank goes into the
+* instruction, and the one row that would run off the end is copied the
+* old way.
+MvnRiga          lda   MvnS
+                 clc
+                 adc   zpPix
+                 sta   MvnX
+                 lda   #0
+                 adc   #0                   ; the carry into the bank
+                 sta   MvnRip
+                 lda   MvnX
+                 clc
+                 adc   MvnC
+                 bcs   MvnPiedi             ; the row crosses a bank
+                 sep   #$20
+                 mx    %10
+                 lda   zpPix+2
+                 clc
+                 adc   MvnRip
+                 sta   MvnBanco
+                 lda   MvnDove              ; $01 always, except when the
+                 sta   MvnBancoD            ; bench is timing $E1
+                 rep   #$30
+                 mx    %00
+                 ldx   MvnX
+                 lda   MvnD
+                 clc
+                 adc   #$2000               ; the buffer inside bank $01
+                 tay
+                 lda   MvnC
+                 jmp   MvnMove
+
+MvnMove          mvn   $02,$01              ; the source bank is written in
+                 phk                        ; the move leaves its own bank
+                 plb                        ; in the data bank register
+                 rts
+MvnBanco         =     MvnMove+2
+MvnBancoD        =     MvnMove+1
+
+* (this one always writes into the buffer: the bench's $E1 pass will put
+*  one row in the wrong place, which the redraw afterwards undoes)
+MvnPiedi         ldy   MvnS
+                 ldx   MvnD
+                 lda   MvnC
+                 inc   a
+                 sta   MvnN
+                 stz   MvnI
+:pix             lda   [zpPix],y
+                 stal  SHRBASE,x
+                 iny
+                 iny
+                 inx
+                 inx
+                 inc   MvnI
+                 inc   MvnI
+                 lda   MvnI
+                 cmp   MvnN
+                 bcc   :pix
+                 rts
+
 * Sbatti - the slam itself
 * In: SlamA = first page, SlamN = how many
 * A whole room is eighty pages, and with interrupts off that long the
@@ -6721,15 +6787,15 @@ Sbatti           lda   SlamN
 * that is a question only the machine can answer. So: four passes over
 * the same window, timed on the sixtieth-of-a-second counter.
 *
-*   1. the copy loop into bank $01, which is what happens now
-*   2. the slam that carries bank $01 across, the whole screen
-*   3. the same copy loop, but straight onto $E1, the old way
-*   4. a block move onto $E1, which does two bytes where the loop
-*      does one instruction
+*   1. the block move into bank $01, which is what happens now
+*   2. the slam that carries the same window across
+*   3. the same block move, but straight onto $E1
+*   4. the copy loop onto $E1, which is how it was done before
 *
 * Press B inside a room. The four numbers come out on the bottom line,
-* in sixtieths of a second for BANCOG passes. 1+2 against 3 against 4 is
-* the whole question.
+* in sixtieths of a second for BANCOG passes. 1+2 against 3 says whether
+* drawing in bank $01 is worth it; 4 against 3 says what the block move
+* was worth.
 BANCOG           =     20             ; passes per measurement
 
 Banco            lda   RoomH
@@ -6738,7 +6804,7 @@ Banco            lda   RoomH
 :c_e             jsr   BancoOra
                  lda   #BANCOG
                  sta   BancoN
-:uno             jsr   BancoBuf
+:uno             jsr   BancoMvn1
                  dec   BancoN
                  bne   :uno
                  jsr   BancoDopo
@@ -6747,9 +6813,9 @@ Banco            lda   RoomH
                  jsr   BancoOra
                  lda   #BANCOG
                  sta   BancoN
-:due             lda   #$2000
-                 sta   SlamA
-                 lda   #125
+:due             lda   #$2000+ROOMOFF       ; only the window, so that it
+                 sta   SlamA                ; matches the other three
+                 lda   #80                  ; (PANOFF-ROOMOFF)/256
                  sta   SlamN
                  jsr   Sbatti
                  dec   BancoN
@@ -6760,7 +6826,7 @@ Banco            lda   RoomH
                  jsr   BancoOra
                  lda   #BANCOG
                  sta   BancoN
-:tre             jsr   BancoE1
+:tre             jsr   BancoMvn
                  dec   BancoN
                  bne   :tre
                  jsr   BancoDopo
@@ -6769,7 +6835,7 @@ Banco            lda   RoomH
                  jsr   BancoOra
                  lda   #BANCOG
                  sta   BancoN
-:qua             jsr   BancoMvn
+:qua             jsr   BancoE1
                  dec   BancoN
                  bne   :qua
                  jsr   BancoDopo
@@ -6801,22 +6867,19 @@ BancoDopo        PushLong #0
 :ok              rts
 
 * one pass over the window, into the buffer in bank $01
-BancoBuf         jsr   BancoVia
-:riga            ldy   SrcRow
-                 ldx   DstRow
-:pix             lda   [zpPix],y
-                 stal  SHRBASE,x
-                 iny
-                 iny
-                 inx
-                 inx
-                 cpx   FineRiga
-                 bcc   :pix
+BancoMvn1        jsr   BancoVia
+:riga            lda   SrcRow
+                 sta   MvnS
+                 lda   DstRow
+                 sta   MvnD
+                 lda   #SCRW-1
+                 sta   MvnC
+                 jsr   MvnRiga
                  jsr   BancoAvanti
                  bne   :riga
                  rts
 
-* the same, straight onto the screen
+* the copy loop the blit used before, straight onto the screen
 BancoE1          jsr   BancoVia
 :riga            ldy   SrcRow
                  ldx   DstRow
@@ -6832,34 +6895,23 @@ BancoE1          jsr   BancoVia
                  bne   :riga
                  rts
 
-* and with a block move, whose source bank is only known now
-BancoMvn         jsr   BancoVia
-                 sep   #$20
-                 mx    %10
-                 lda   zpPix+2
-                 sta   BancoBanco
-                 rep   #$30
-                 mx    %00
-:riga            ldx   SrcRow
+* the same block move, but writing on $E1 instead of the buffer: the
+* only difference between this and the first measurement is the bank
+BancoMvn         lda   #$00E1
+                 sta   MvnDove
+                 jsr   BancoVia
+:riga            lda   SrcRow
+                 sta   MvnS
                  lda   DstRow
-                 clc
-                 adc   #$2000               ; the screen inside bank $E1
-                 tay
+                 sta   MvnD
                  lda   #SCRW-1
-                 jsr   BancoIstr
-                 phk                        ; the move leaves the bank behind
-                 plb
+                 sta   MvnC
+                 jsr   MvnRiga
                  jsr   BancoAvanti
                  bne   :riga
+                 lda   #$0001
+                 sta   MvnDove
                  rts
-
-* The bank the block move reads from is only known once the memory has
-* been handed out, so it is written into the instruction itself. It sits
-* on its own because a label inside a routine would end the run of local
-* ones.
-BancoIstr        mvn   $02,$E1
-                 rts
-BancoBanco       =     BancoIstr+2
 
 BancoVia         lda   ScrollX
                  lsr   a
@@ -10973,6 +11025,14 @@ SlamN            ds    2                    ; how many are left
 SlamD            ds    2                    ; our direct page, put aside
 SlamS            ds    2                    ; and our stack
 SlamB            ds    2                    ; pages left in this bite
+MvnS             ds    2
+MvnD             ds    2
+MvnC             ds    2
+MvnX             ds    2
+MvnRip           ds    2
+MvnN             ds    2
+MvnI             ds    2
+MvnDove          ds    2                    ; the bank the move writes to
 BancoN           ds    2
 BancoR           ds    2
 BancoT0          ds    2

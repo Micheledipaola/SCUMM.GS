@@ -27,7 +27,7 @@ from gs816 import CPU, Memoria, SHR
 
 # Where the program and the blocks it asks for go
 BASE_PROG = 0x020000
-BASE_HEAP = 0x030000
+BASE_HEAP = 0x031200          # not on a bank boundary, like the real one
 STACK = 0xFE00          # the S register is sixteen bits: the stack lives in bank 0
 
 EGA = [(0, 0, 0), (0, 0, 170), (0, 170, 0), (0, 170, 170),
@@ -178,9 +178,14 @@ class Mondo:
 
     # --- dynamic memory ---------------------------------------------------
     def alloca(self, quanti):
-        """One block. Aligned to a bank to keep things tidy."""
-        if quanti >= 0x8000:
-            self.prossimo = (self.prossimo + 0xFFFF) & ~0xFFFF
+        """One block, page aligned and nothing more.
+
+        The real Memory Manager does not line blocks up with banks, and
+        a buffer of sixty thousand bytes will straddle two of them. The
+        emulator used to be tidier than the machine, which hid a whole
+        class of mistake: a block move cannot cross a bank, where a long
+        pointer can.
+        """
         indirizzo = self.prossimo
         self.prossimo = (indirizzo + quanti + 0xFF) & ~0xFF
         return indirizzo
