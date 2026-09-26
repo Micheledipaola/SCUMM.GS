@@ -1,0 +1,18 @@
+# music/map.txt — Amiga original (sounds 50 and 58), not the NES covers.
+#
+# house 0 / ego N 0  = off
+
+intro 58
+amiga50 50
+amiga58 58
+
+ego 1 0
+ego 2 0
+ego 3 0
+ego 4 0
+ego 5 0
+ego 6 0
+ego 7 0
+
+house 0
+house_follow 0

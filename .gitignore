@@ -2,6 +2,8 @@
 data/
 *.LFL
 *.2mg
+*.nes
+*.NES
 src/fontdata.s
 
 build/

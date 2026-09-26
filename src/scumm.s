@@ -140,6 +140,10 @@ SFXPLAY          =     $8000          ; one 32K DOC bank at a time
 SFXALLOC         =     $8100          ; 32K plus a page for alignment
 SFXGEN           =     $0101          ; ch 0, generator 1, free-form (TN #37)
 SFXSTOP          =     $0002          ; bitmask: generator 1
+MUSSTOP          =     $0002          ; same generator as the SFX (gen 1)
+MUSVOL           =     160
+MUSIDX           =     256
+MUSSEQ           =     16384
 
 VAR_ROOM         =     4
 VAR_LIGHTS       =     12
@@ -219,6 +223,8 @@ zpCost           =     $1C            ; the costume store
 zpMask           =     $20            ; the mask: who is in front of whom
 zpNome           =     $24            ; the description whose name we want
 zpSfx            =     $28            ; packed Amiga samples (SFX file)
+zpMusI           =     $2C            ; GMUS index (MUSI)
+zpMus            =     $30            ; current track events (MUSQ)
 
 *=======================================================================
 Start            phk
@@ -355,6 +361,7 @@ Start            phk
                  bcc   :indexok
                  brl   DiskError
 :indexok         jsr   LoadSfx
+                 jsr   LoadMus
                  jsr   ResetVM
 
 * At power-on the lights are on: variable 12 starts at zero, which means
@@ -779,7 +786,8 @@ ChiediRestart    _HideCursor
 *=======================================================================
 * RiavviaGioco - same start as after LoadIndex
 *=======================================================================
-RiavviaGioco     jsr   StopSfx
+RiavviaGioco     jsr   StopMus
+                 jsr   StopSfx
                  jsr   SpegniMsg
                  jsr   ResetVM
                  lda   #11
@@ -1290,11 +1298,18 @@ TryOpen          jsl   $E100A8
                  rts
 
 *=======================================================================
-* Sound: Amiga samples via the Sound Manager free-form synth. Music no.
+* Sound: Amiga samples via the Sound Manager free-form synth.
+* Music is NES sequences on the Amiga-58 wavetables (gens 2-5).
 *=======================================================================
 AvviaSuono       stz   SndOn
                  stz   SfxOn
                  stz   PlayingId
+                 stz   MusOn
+                 stz   MusReady
+                 stz   MusId
+                 stz   MusPend
+                 lda   #$FFFF
+                 sta   MusEgoLast
                  stz   SndWaitT
                  stz   SndWaitId
                  stz   SndTried
@@ -1469,7 +1484,7 @@ PrefetchClk      lda   SfxOn
 
 StopSfx          lda   SndOn
                  beq   :fine
-                 PushWord #$FFFF            ; all generators
+                 PushWord #SFXSTOP          ; generator 1 only; leave the music
                  _FFStopSound
                  stz   PlayingId
 :fine            rts
@@ -1488,16 +1503,22 @@ SuonoTick        lda   SndWaitT
                  sta   SndWant
                  jsr   PlayOra              ; delayed comet / door, not through PlaySfx
 :nowait          lda   PlayingId
-                 beq   :fine
+                 beq   :sfxdone
                  lda   SndLoop
-                 bne   :fine
+                 bne   :sfxdone
                  pha
                  PushWord #1                ; generator number, not the mode word
                  _FFSoundDoneStatus
                  pla
-                 beq   :fine
+                 beq   :sfxdone
                  stz   PlayingId
-:fine            rts
+:sfxdone         lda   MusPend
+                 beq   :nopend
+                 stz   MusPend
+                 jsr   PlayMus
+:nopend          jsr   MusTick
+                 jsr   MusWatchEgo
+                 rts
 
 * GSFX index: 8-byte header then 128 records of 8:
 * +0 freq, +2 pages (lo) / flags (hi), +4 vol (lo) / bank (hi),
@@ -1523,7 +1544,7 @@ PlaySfx          sta   SndWant
                  lda   SndWaitId
                  cmp   #56
                  beq   :giaatt
-                 lda   #500
+                 lda   #400
                  sta   SndWaitT
                  lda   #56
                  sta   SndWaitId
@@ -1671,8 +1692,24 @@ EStartId         cmp   #395
                  rts
 
 hStartSound      jsr   VOB1
+                 pha
+                 jsr   TryMus
+                 bcc   :mus
+                 pla
                  jsr   PlaySfx
-                 stz   Esito
+                 bra   :ok
+:mus             pla
+:ok              stz   Esito
+                 rts
+
+hStopMusic       jsr   StopMus
+                 lda   PlayingId
+                 cmp   #50
+                 beq   :sfx
+                 cmp   #58
+                 bne   :ok
+:sfx             jsr   StopSfx
+:ok              stz   Esito
                  rts
 
 hStopSound       jsr   VOB1
@@ -1680,7 +1717,10 @@ hStopSound       jsr   VOB1
                  bne   :play
                  stz   SndWaitT
                  stz   SndWaitId
-:play            cmp   PlayingId
+:play            pha
+                 jsr   TryStopMus
+                 pla
+                 cmp   PlayingId
                  bne   :fine
                  jsr   StopSfx
 :fine            stz   Esito
@@ -1690,12 +1730,32 @@ hIsSound         jsr   FetchB
                  jsr   ResolveVar
                  stx   DestVar
                  jsr   VOB1
+                 sta   MusTmp
                  ldx   DestVar
                  cmp   PlayingId
-                 bne   :zero
-                 lda   PlayingId
+                 beq   :si
+                 lda   MusReady
                  beq   :zero
-                 lda   #1
+                 lda   MusTmp
+                 cmp   MusId
+                 beq   :muson
+                 lda   MusTmp
+                 cmp   #58
+                 bne   :c50
+                 ldy   #12
+                 lda   [zpMusI],y
+                 cmp   MusId
+                 beq   :muson
+                 bra   :zero
+:c50             cmp   #50
+                 bne   :zero
+                 ldy   #10
+                 lda   [zpMusI],y
+                 cmp   MusId
+                 bne   :zero
+:muson           lda   MusOn
+                 beq   :zero
+:si              lda   #1
                  sta   Vars,x
                  stz   Esito
                  rts
@@ -1703,6 +1763,468 @@ hIsSound         jsr   FetchB
                  sta   Vars,x
                  stz   Esito
                  rts
+
+*=======================================================================
+* Music - NES scores, Amiga 58 waves, generator 1 (the SFX one, which
+* the Sound Manager actually starts). Polyphony waits; freeze first.
+* Index MUSI, samples MUS0, one track from MUSQ. music/map.txt chooses
+* which id is intro / house / each ego.
+*=======================================================================
+LoadMus          stz   MusReady
+                 stz   MusOn
+                 lda   #PathMusI
+                 sta   OpenPath
+                 lda   #^PathMusI
+                 sta   OpenPath+2
+                 jsr   TryOpen
+                 bcc   :i
+                 lda   #PathMusI2
+                 sta   OpenPath
+                 lda   #^PathMusI2
+                 sta   OpenPath+2
+                 jsr   TryOpen
+                 bcc   :i
+                 brl   :no
+:i               lda   OpenRef
+                 sta   ReadRef
+                 sta   CloseRef
+                 PushLong #MUSIDX
+                 PushWord #$C000
+                 jsr   GetBlock
+                 bcc   :goti
+                 brl   :chiudi
+:goti            lda   BlockLo
+                 sta   zpMusI
+                 lda   BlockHi
+                 sta   zpMusI+2
+                 sta   ReadBuf+2
+                 lda   BlockLo
+                 sta   ReadBuf
+                 lda   #MUSIDX
+                 sta   ReadCount
+                 stz   ReadCount+2
+                 jsr   ReadAndClose
+                 ldy   #0
+                 lda   [zpMusI],y
+                 cmp   #$4D47               ; 'G','M'
+                 bne   :no
+                 PushLong #SFXALLOC
+                 PushWord #$C000
+                 jsr   GetBlock
+                 bcs   :no
+                 lda   BlockLo
+                 clc
+                 adc   #255
+                 and   #$FF00
+                 sta   MusPlayLo
+                 lda   BlockHi
+                 sta   MusPlayHi
+                 jsr   ApriMus0
+                 bcs   :no
+                 lda   MusPlayLo
+                 sta   ReadBuf
+                 lda   MusPlayHi
+                 sta   ReadBuf+2
+                 lda   #SFXPLAY
+                 sta   ReadCount
+                 stz   ReadCount+2
+                 jsr   ReadAndClose
+                 PushLong #MUSSEQ
+                 PushWord #$C000
+                 jsr   GetBlock
+                 bcs   :no
+                 lda   BlockLo
+                 sta   zpMus
+                 lda   BlockHi
+                 sta   zpMus+2
+                 lda   #1
+                 sta   MusReady
+:no              rts
+:chiudi          jsl   $E100A8
+                 dw    CloseGS
+                 adrl  CloseParm
+                 rts
+
+ApriMus0         lda   #PathMus0
+                 sta   OpenPath
+                 lda   #^PathMus0
+                 sta   OpenPath+2
+                 jsr   TryOpen
+                 bcc   :ok
+                 lda   #PathMus02
+                 sta   OpenPath
+                 lda   #^PathMus02
+                 sta   OpenPath+2
+                 jsr   TryOpen
+                 bcs   :bad
+:ok              lda   OpenRef
+                 sta   ReadRef
+                 sta   CloseRef
+                 clc
+                 rts
+:bad             sec
+                 rts
+
+ApriMusQ         lda   #PathMusQ
+                 sta   OpenPath
+                 lda   #^PathMusQ
+                 sta   OpenPath+2
+                 jsr   TryOpen
+                 bcc   :ok
+                 lda   #PathMusQ2
+                 sta   OpenPath
+                 lda   #^PathMusQ2
+                 sta   OpenPath+2
+                 jsr   TryOpen
+                 bcs   :bad
+:ok              lda   OpenRef
+                 sta   ReadRef
+                 sta   CloseRef
+                 sta   MarkRef
+                 clc
+                 rts
+:bad             sec
+                 rts
+
+TryMus           sta   MusWant
+                 lda   MusReady
+                 beq   :no
+                 lda   MusWant
+                 cmp   #50
+                 bne   :c58
+                 ldy   #10
+                 lda   [zpMusI],y
+                 bra   :use
+:c58             cmp   #58
+                 bne   :as
+                 ldy   #12
+                 lda   [zpMusI],y
+:use             sta   MusWant
+:as              lda   MusWant
+                 beq   :no
+                 jsr   FindTrack
+                 bcs   :no
+                 lda   #1
+                 sta   MusPend              ; load on the next tick, not in the script
+                 clc
+                 rts
+:no              sec
+                 rts
+
+TryStopMus       cmp   MusId
+                 beq   :go
+                 cmp   #50
+                 beq   :go
+                 cmp   #58
+                 beq   :go
+                 rts
+:go              jmp   StopMus
+
+FindTrack        ldy   #4
+                 lda   [zpMusI],y
+                 sta   MusTmp
+                 ldy   #48
+:lp              lda   MusTmp
+                 beq   :miss
+                 lda   [zpMusI],y
+                 cmp   MusWant
+                 beq   :hit
+                 tya
+                 clc
+                 adc   #8
+                 tay
+                 dec   MusTmp
+                 bra   :lp
+:hit             iny
+                 iny
+                 lda   [zpMusI],y
+                 sta   MusTLen
+                 iny
+                 iny
+                 lda   [zpMusI],y
+                 sta   MarkPos
+                 iny
+                 iny
+                 lda   [zpMusI],y
+                 sta   MarkPos+2
+                 clc
+                 rts
+:miss            sec
+                 rts
+
+PlayMus          lda   MusReady
+                 bne   :go
+                 rts
+:go              jsr   StopMus
+                 jsr   ApriMusQ
+                 bcc   :rd
+                 rts
+:rd              jsl   $E100A8
+                 dw    SetMarkGS
+                 adrl  MarkParm
+                 lda   zpMus
+                 sta   ReadBuf
+                 lda   zpMus+2
+                 sta   ReadBuf+2
+                 lda   MusTLen
+                 sta   ReadCount
+                 stz   ReadCount+2
+                 jsr   ReadAndClose
+                 ldy   #0
+                 lda   [zpMus],y
+                 sta   MusN
+                 iny
+                 iny
+                 lda   [zpMus],y
+                 sta   MusN+2
+                 iny
+                 iny
+                 lda   [zpMus],y
+                 sta   MusN+4
+                 iny
+                 iny
+                 lda   [zpMus],y
+                 sta   MusN+6
+                 lda   #8
+                 sta   MusPtr
+                 lda   MusN
+                 asl   a
+                 asl   a
+                 asl   a
+                 clc
+                 adc   #8
+                 sta   MusPtr+2
+                 lda   MusN+2
+                 asl   a
+                 asl   a
+                 asl   a
+                 clc
+                 adc   MusPtr+2
+                 sta   MusPtr+4
+                 lda   MusN+4
+                 asl   a
+                 asl   a
+                 asl   a
+                 clc
+                 adc   MusPtr+4
+                 sta   MusPtr+6
+                 ldx   #0
+:z               stz   MusEnd,x
+                 inx
+                 inx
+                 cpx   #8
+                 bcc   :z
+                 stz   MusClock
+                 lda   MusWant
+                 sta   MusId
+                 ldy   #8
+                 lda   [zpMusI],y          ; house id
+                 cmp   MusWant
+                 bne   :noloop
+                 lda   #1
+                 bra   :lp
+:noloop          lda   #0
+:lp              sta   MusLoop
+                 lda   #1
+                 sta   MusOn
+:no              rts
+
+StopMus          stz   MusPend
+                 lda   MusOn
+                 beq   :off
+                 lda   SndOn
+                 beq   :off
+                 PushWord #MUSSTOP
+                 _FFStopSound
+:off             stz   MusOn
+                 stz   MusId
+                 rts
+
+MusWatchEgo      lda   MusReady
+                 beq   :no
+                 lda   Vars+VO_ROOM
+                 cmp   #45                  ; kid select
+                 beq   :no
+                 cmp   #33                  ; meteor / tree
+                 beq   :no
+                 cmp   #49                  ; fly-over after the tree
+                 beq   :no
+                 lda   Vars+VO_EGO
+                 cmp   MusEgoLast
+                 beq   :no
+                 sta   MusEgoLast
+                 cmp   #1
+                 bcc   :no
+                 cmp   #8
+                 bcs   :no
+                 asl   a
+                 clc
+                 adc   #16
+                 tay
+                 lda   [zpMusI],y
+                 beq   :no
+                 sta   MusWant
+                 jsr   FindTrack
+                 bcs   :no
+                 jsr   PlayMus
+:no              rts
+
+MusTick          lda   MusOn
+                 bne   :on
+                 rts
+:on                               lda   MusClock
+                 clc
+                 adc   Elapsed
+                 sta   MusClock
+                 ldx   #6                   ; lead last, so it wins the one generator
+:ch              jsr   MusChan
+                 dex
+                 dex
+                 bpl   :ch
+                 jsr   MusMaybeEnd
+                 rts
+
+* X = channel * 2. Fire due events, stop the voice when its duration ends.
+* The Sound Manager kills X (and Y); every toolbox call here saves them.
+MusChan          phx
+                 lda   MusN,x
+                 beq   :hold
+                 lda   #3                   ; at most a handful of notes a tick
+                 sta   MusBurst
+:more            lda   MusBurst
+                 beq   :hold
+                 dec   MusBurst
+                 lda   MusPtr,x
+                 tay
+                 lda   [zpMus],y            ; tick
+                 cmp   MusClock
+                 beq   :fire
+                 bcc   :fire
+                 bra   :hold
+:fire            lda   MusN,x
+                 beq   :hold
+                 jsr   MusNote
+                 lda   MusPtr,x
+                 clc
+                 adc   #8
+                 sta   MusPtr,x
+                 lda   MusN,x
+                 dec   a
+                 sta   MusN,x
+                 bne   :more
+:hold            lda   MusEnd,x
+                 beq   :rts
+                 cmp   MusClock
+                 beq   :cut
+                 bcs   :rts
+:cut             jsr   MusQuiet
+                 stz   MusEnd,x
+:rts             plx
+                 rts
+
+MusNote          phx
+                 phy
+                 lda   [zpMus],y            ; tick, skip
+                 iny
+                 iny
+                 lda   [zpMus],y            ; freq
+                 sta   FFFreq
+                 iny
+                 iny
+                 lda   [zpMus],y            ; dur
+                 clc
+                 adc   MusClock
+                 sta   MusEnd,x
+                 iny
+                 iny
+                 lda   [zpMus],y            ; inst
+                 and   #$00FF
+                 asl   a
+                 clc
+                 adc   #32
+                 tay
+                 lda   [zpMusI],y
+                 and   #$00FF
+                 sta   MusPage
+                 lda   [zpMusI],y
+                 xba
+                 and   #$00FF
+                 beq   :ply
+                 lda   #8                   ; always 2K, like PlaySfx
+                 sta   FFPages
+                 lda   MusPage
+                 xba
+                 clc
+                 adc   MusPlayLo
+                 sta   FFWave
+                 lda   MusPlayHi
+                 adc   #0
+                 sta   FFWave+2
+                 lda   #$0800
+                 sta   FFBuf
+                 lda   MusDocT,x
+                 sta   FFDoc
+                 lda   #MUSVOL
+                 sta   FFVol
+                 stz   FFNext
+                 stz   FFNext+2
+                 jsr   MusQuiet
+                 lda   MusGenT,x
+                 pha
+                 PushPtr FFSynth
+                 _FFStartSound
+:ply             ply
+                 plx
+                 rts
+
+MusQuiet         phx
+                 lda   SndOn
+                 beq   :no
+                 lda   MusBitT,x
+                 pha
+                 _FFStopSound
+:no              plx
+                 rts
+
+MusMaybeEnd      ldx   #0
+:lp              lda   MusN,x
+                 bne   :busy
+                 lda   MusEnd,x
+                 bne   :busy
+                 inx
+                 inx
+                 cpx   #8
+                 bcc   :lp
+                 lda   MusLoop
+                 beq   :house
+                 lda   MusId
+                 sta   MusWant
+                 jsr   FindTrack
+                 bcs   :die
+                 lda   #1
+                 sta   MusPend
+                 rts
+:house           ldy   #6
+                 lda   [zpMusI],y          ; flags
+                 and   #1
+                 beq   :die
+                 ldy   #8
+                 lda   [zpMusI],y
+                 beq   :die
+                 cmp   MusId
+                 beq   :die
+                 sta   MusWant
+                 jsr   FindTrack
+                 bcs   :die
+                 lda   #1
+                 sta   MusPend
+                 rts
+:die             jsr   StopMus
+:busy            rts
+
+MusGenT          dw    $0101,$0101,$0101,$0101
+MusDocT          dw    $2000,$2000,$2000,$2000
+MusBitT          dw    $0002,$0002,$0002,$0002
 
 *=======================================================================
 * ReadAndClose - read ReadCount bytes into ReadBuf and close
@@ -11631,6 +12153,18 @@ PathSfx          dw    7
                  asc   'MM/SFX0'
 PathSfx2         dw    9
                  asc   '1/MM/SFX0'
+PathMusI         dw    7
+                 asc   'MM/MUSI'
+PathMusI2        dw    9
+                 asc   '1/MM/MUSI'
+PathMus0         dw    7
+                 asc   'MM/MUS0'
+PathMus02        dw    9
+                 asc   '1/MM/MUS0'
+PathMusQ         dw    7
+                 asc   'MM/MUSQ'
+PathMusQ2        dw    9
+                 asc   '1/MM/MUSQ'
 
 * And the saved games, in the same folder. The digit is rewritten in
 * PathS1+9 and PathS2+11.
@@ -12236,7 +12770,7 @@ ChiudiPos        jsl   $E100A8
 Firma            asc   'SCUMMGS2'
 
 OpTab            anop
-                 dw    hStop,hPutActor,hUnoB,hActorRoom   ; $00
+                 dw    hStop,hPutActor,hStartSound,hActorRoom   ; $00
                  dw    hUnless,hDrawObject,hResB,hSetState   ; $04
                  dw    hUnless,hFaceActor,hMoveInd,hObjPrep   ; $08
                  dw    hRes,hWalkActor,hPutAtObj,hUnlessState   ; $0C
@@ -12244,7 +12778,7 @@ OpTab            anop
                  dw    hPrint,hActorFromPos,hRandom,hClearState   ; $14
                  dw    hGoto,hSentence,hMove,hSetBit   ; $18
                  dw    hStartSound,hClassOf,hWalkTo,hUnlessState   ; $1C
-                 dw    hNop,hPutActor,hSaveLoad,hGetActY   ; $20
+                 dw    hStopMusic,hPutActor,hSaveLoad,hGetActY   ; $20
                  dw    hRoomEgo,hDrawObject,hVarRange,hSetState   ; $24
                  dw    hUnless,hSetOwner,hAddInd,hUnoB   ; $28
                  dw    hAssignB,hPutInRoom,hDelay,hUnlessState   ; $2C
@@ -12268,7 +12802,7 @@ OpTab            anop
                  dw    hGetDist,hFindObject,hWalkToObj,hClearState   ; $74
                  dw    hUnless,hSentence,hVerbOps,hGetBox   ; $78
                  dw    hIsSound,hDueB,hWalkTo,hUnlessState   ; $7C
-                 dw    hBreak,hPutActor,hUnoB,hActorRoom   ; $80
+                 dw    hBreak,hPutActor,hStartSound,hActorRoom   ; $80
                  dw    hUnless,hDrawObject,hResB,hSetState   ; $84
                  dw    hUnless,hFaceActor,hMoveInd,hObjPrep   ; $88
                  dw    hRes,hWalkActor,hPutAtObj,hUnlessState   ; $8C
@@ -12842,6 +13376,23 @@ SfxHave          ds    2
 SndBank          ds    2
 SndPage          ds    2
 SndVol           ds    2
+MusReady         ds    2
+MusOn            ds    2
+MusId            ds    2
+MusWant          ds    2
+MusClock         ds    2
+MusLoop          ds    2
+MusTLen          ds    2
+MusTmp           ds    2
+MusPage          ds    2
+MusPlayLo        ds    2
+MusPlayHi        ds    2
+MusEgoLast       ds    2
+MusPend          ds    2
+MusBurst         ds    2
+MusN             ds    8
+MusPtr           ds    8
+MusEnd           ds    8
 
 SlotNum          ds    {12}*2
 SlotStat         ds    {12}*2
