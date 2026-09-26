@@ -5789,6 +5789,20 @@ LeggiObj         lda   #28                  ; the first table holds the
                  sta   ObjImgOff
                  beq   :no
 
+* A hundred and seventy-one objects in the game have no picture of their
+* own: the easel and the crate in the studio, the stairs, the things
+* that are simply painted into the background. Their entry in the
+* picture table is not zero, as one would hope - it points at where the
+* descriptions begin, just past the last real picture. Decoding from
+* there reads the descriptions as if they were pixels, and since an
+* object lays its own mask down as well, it sprays the mask plane with
+* nonsense: whoever walks past comes out full of holes. So: a picture
+* that does not begin before the descriptions is not a picture.
+                 jsr   ConfineImmagini
+                 lda   ObjImgOff
+                 cmp   ObjConfine
+                 bcs   :no
+
                  lda   ObjCd
                  clc
                  adc   #7
@@ -8924,6 +8938,38 @@ AltezzaByte      lda   RoomH
                  rts
 
 *=======================================================================
+* ConfineImmagini - where a room's pictures stop and its descriptions
+*                   begin: the lowest entry of the second table
+*=======================================================================
+ConfineImmagini  ldy   #20
+                 lda   [zpRaw],y
+                 and   #$00FF
+                 asl   a
+                 sta   ConfN
+                 lda   #$FFFF
+                 sta   ObjConfine
+                 lda   ConfN
+                 beq   :fine
+                 stz   ConfI
+:lp              lda   #28
+                 clc
+                 adc   ConfN
+                 adc   ConfI
+                 tay
+                 lda   [zpRaw],y
+                 beq   :prossimo
+                 cmp   ObjConfine
+                 bcs   :prossimo
+                 sta   ObjConfine
+:prossimo        lda   ConfI
+                 clc
+                 adc   #2
+                 sta   ConfI
+                 cmp   ConfN
+                 bcc   :lp
+:fine            rts
+
+*=======================================================================
 * DrawObjects - the lit objects, from the last to the first
 *=======================================================================
 * The game draws them in this order on purpose: the first in the list
@@ -10582,6 +10628,10 @@ DirtyX           ds    2
 DirtyY           ds    2
 DirtyR           ds    2                    ; right edge
 DirtyB           ds    2                    ; bottom edge
+
+ObjConfine       ds    2                    ; the pictures end here
+ConfN            ds    2
+ConfI            ds    2
 
 MvnS             ds    2                    ; the block move's row
 MvnD             ds    2
