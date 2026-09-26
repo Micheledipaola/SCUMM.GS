@@ -15,16 +15,20 @@ and debug it.
 Playable. Maniac Mansion runs from the title screen into the mansion: rooms, walking
 with pathfinding, actors with their costume animations, objects and their states,
 the verb panel and the inventory, the sentence line, dialogue with the mouth moving,
-scrolling rooms with the camera following, dark rooms with the flashlight, and saving
-and loading through the game's own save screen.
+scrolling rooms with the camera following, dark rooms with the flashlight, Amiga
+sound effects (no music), and saving and loading through the game's own save screen.
 
 The Amiga release works too, from files taken off its own floppies with
 `tools/adf.py`: same index, byte-identical bytecode, and the same picture decoder
 reads its rooms. Its room files are half again as large, which is all the engine
-needed to be told.
+needed to be told. Sound comes from those Amiga samples, packed for the IIGS DOC;
+the music tracks in the same files are skipped.
 
-Still missing: sound and music, and a few opcodes the game has not needed yet.
-Zak McKracken has not been tried.
+ESC skips a cutscene when the script allowed it, Q asks before quitting, Space
+pauses, Apple-8 asks before restarting.
+
+A few opcodes the game has not needed yet are still stubs. Zak McKracken uses the
+same V2 files but has not been tried; later SCUMM games are a different engine.
 
 ## Building
 
@@ -34,14 +38,17 @@ You need:
   cross-assembler, from Brutal Deluxe
 - **[Cadius](https://github.com/mach-kernel/cadius)** — to build the ProDOS disk image
 - your own copy of the game's `.LFL` files, in a folder (default: `data/`)
+- optionally an Amiga Maniac disk image, so the build can pack SFX
+  (`AMIGA_2MG`, default `../altri SCUMM/SCUMM-AMIGA.2mg` next to this repo)
 
 ```sh
 ./build_scumm.sh /path/to/your/LFL/files
 ```
 
-The result is `build/SCUMM.2mg`, a 1600 KB ProDOS image holding the interpreter and
-the game's own files. It boots on a real IIGS (ROM01 and ROM03) and under
-[GSplus](https://github.com/digarok/gsplus).
+The result is `build/SCUMM.2mg`, a 1600 KB ProDOS image holding the interpreter,
+the game's own files (as `MM/L00.LFL` …), and if the Amiga image was found the
+SFX banks (`MM/SFXI`, `MM/SFX0` …). It boots on a real IIGS (ROM01 and ROM03)
+and under [GSplus](https://github.com/digarok/gsplus).
 
 ### The font
 
@@ -143,6 +150,7 @@ understand the data and to find mistakes in seconds instead of one disk at a tim
 | `font_orig.py` | the font drawn for this project, and where it is designed |
 | `font_mm.py` | finds the game's own font inside its program, whichever release |
 | `adf.py` | reads files out of an Amiga floppy image, for the Amiga release |
+| `sfx_amiga.py` | packs Amiga V2 sound effects into GSFX banks for the IIGS (no music) |
 
 The emulator is the reason this got anywhere. It boots the real interpreter, feeds it
 the real game files, lets a test click on things and hands back the video memory as a
@@ -156,13 +164,16 @@ python3 tools/prova.py                 # play the intro, save a screenshot
 
 ## Notes on the source
 
-`src/scumm.s` is one file, about ten thousand lines. The comments carry the reasoning,
+`src/scumm.s` is one file. The comments carry the reasoning,
 including the mistakes: where a behaviour comes from a specific line of the game's own
 bytecode, or from how the original engine does it, the comment says so. That is
 deliberate — most of the hard bugs in a project like this are not in the assembly but
 in a wrong idea about what the data means.
 
 Labels and local symbols are still in Italian in places; the comments are not.
+
+A handful of sound timings (the intro comet, the Start beep, door clicks) are
+tuned to Maniac Mansion's objects and scripts, not to a generic V2 table.
 
 ## Credits and licence
 
