@@ -516,11 +516,11 @@ MainLoop         jsr   Orologio
 :tasto           lda   EvtMessage
                  and   #$00FF
                  cmp   #$1B
-                 beq   :esci
+                 beq   :esc
                  cmp   #'q'
-                 beq   :esci
+                 beq   :chiedi
                  cmp   #'Q'
-                 beq   :esci
+                 beq   :chiedi
 * service keys: to wander between rooms while the game cannot take us
 * there by itself yet
                  cmp   #$2E                 ; full stop: next room
@@ -561,9 +561,87 @@ MainLoop         jsr   Orologio
                  bra   :vivi
 
 * Even when no script is alive any more we do not quit: whatever is on
-* screen stays, so it can be looked at. Q or ESC closes.
+* screen stays, so it can be looked at. Q asks; ESC skips a cutscene if
+* the script left an override, otherwise it asks too.
 :vivi            brl   MainLoop
-:esci            brl   Shutdown
+:esc             jsr   SaltaScena
+                 bcs   :vivi
+:chiedi          jsr   ChiediUscita
+                 brl   :vivi
+
+*=======================================================================
+* SaltaScena - ESC during a cutscene: jump to the override, carry set
+*=======================================================================
+SaltaScena       lda   OvrPC
+                 beq   :no
+                 ldx   OvrSlot
+                 sta   SlotPC,x
+                 stz   OvrPC
+                 sec
+                 rts
+:no              clc
+                 rts
+
+*=======================================================================
+* ChiediUscita - not in the scripts: Y quits, N or ESC stay
+*=======================================================================
+ChiediUscita     _HideCursor
+                 lda   #ROOMOFF
+                 sta   FillStart
+                 lda   #PANOFF
+                 sta   FillEnd
+                 lda   #$0000
+                 jsr   FillArea
+                 lda   #15
+                 jsr   SetTextColor
+                 lda   #ROOMTOP+52
+                 sta   TxtY
+                 lda   #MsgQuit1
+                 sta   zpStr
+                 lda   #^MsgQuit1
+                 sta   zpStr+2
+                 jsr   DrawStrCenter
+                 lda   #ROOMTOP+68
+                 sta   TxtY
+                 lda   #MsgQuit2
+                 sta   zpStr
+                 lda   #^MsgQuit2
+                 sta   zpStr+2
+                 jsr   DrawStrCenter
+                 _ShowCursor
+:attendi         PushWord #0
+                 PushWord #$FFFF
+                 PushPtr EventRec
+                 _GetNextEvent
+                 pla
+                 beq   :attendi
+                 lda   EvtWhat
+                 cmp   #1
+                 beq   :no
+                 cmp   #3
+                 beq   :tasto
+                 cmp   #5
+                 bne   :attendi
+:tasto           lda   EvtMessage
+                 and   #$00FF
+                 cmp   #'y'
+                 beq   :si
+                 cmp   #'Y'
+                 beq   :si
+                 cmp   #'q'
+                 beq   :si
+                 cmp   #'Q'
+                 beq   :si
+                 cmp   #'n'
+                 beq   :no
+                 cmp   #'N'
+                 beq   :no
+                 cmp   #$1B
+                 bne   :attendi
+:no              jsr   DrawRoom
+                 jsr   DrawMsg
+                 rts
+:si              brl   Shutdown
 
 *=======================================================================
 * TastoGioco - the keys the game expects. A = the character.
@@ -2179,6 +2257,7 @@ ResetVM          ldx   #0
                  stz   VerbHoverLast
                  stz   SentHotLast
                  stz   InvHotLast
+                 stz   OvrPC
                  lda   #$FFFF
                  sta   TxtYCache
                  rts
@@ -4302,7 +4381,8 @@ hCutscene        lda   Vars+VO_CURSOR
                  stz   Esito
                  rts
 
-hEndCut          lda   CutCam
+hEndCut          stz   OvrPC
+                 lda   CutCam
                  sta   CamMode
                  cmp   #CAM_SEGUI
                  bne   :stanza
@@ -4346,7 +4426,7 @@ hEndCut          lda   CutCam
 * choice of the kids, for instance.
 hOverride        lda   PC
                  sta   OvrPC
-                 lda   SlotIdx
+                 lda   CurSlot
                  sta   OvrSlot
                  jsr   FetchB
                  jsr   FetchW
@@ -10871,6 +10951,10 @@ MsgCred1         asc   'Porting to IIGS: Michele Di Paola'
 MsgCred2         asc   'aka TheDIPO! / JeDiCrack'
                  dfb   0
 MsgLoad          asc   'Loading...'
+                 dfb   0
+MsgQuit1         asc   'Quit the game?'
+                 dfb   0
+MsgQuit2         asc   'Y = yes     N = no'
                  dfb   0
 
 * The table of the 256 opcodes, generated from the same list verified in
