@@ -508,19 +508,30 @@ MainLoop         jsr   Orologio
                  cmp   #1                   ; button pressed
                  bne   :nonclic
                  jsr   DoClick
-                 bra   :vivi
+                 brl   :vivi
 :nonclic         cmp   #3
                  beq   :tasto
                  cmp   #5
-                 bne   :vivi
+                 beq   :tasto
+                 brl   :vivi
 :tasto           lda   EvtMessage
                  and   #$00FF
+                 sta   TastoQ
                  cmp   #$1B
                  beq   :esc
                  cmp   #'q'
                  beq   :chiedi
                  cmp   #'Q'
                  beq   :chiedi
+                 cmp   #' '
+                 beq   :pausa
+                 lda   EvtModifiers
+                 and   #$0100
+                 beq   :no8
+                 lda   TastoQ
+                 cmp   #'8'
+                 beq   :riparti
+:no8             lda   TastoQ
 * service keys: to wander between rooms while the game cannot take us
 * there by itself yet
                  cmp   #$2E                 ; full stop: next room
@@ -534,6 +545,15 @@ MainLoop         jsr   Orologio
                  cmp   #'D'
                  beq   :debug
                  jsr   TastoGioco
+                 brl   :vivi
+:esc             jsr   SaltaScena
+                 bcc   :chiedi
+                 brl   :vivi
+:chiedi          jsr   ChiediUscita
+                 brl   :vivi
+:pausa           jsr   PausaGioco
+                 brl   :vivi
+:riparti         jsr   ChiediRestart
                  brl   :vivi
 :debug           lda   DbgOn
                  eor   #1
@@ -558,16 +578,12 @@ MainLoop         jsr   Orologio
                  bne   :vai
                  lda   #53
 :vai             jsr   ChangeRoom
-                 bra   :vivi
+                 brl   :vivi
 
 * Even when no script is alive any more we do not quit: whatever is on
 * screen stays, so it can be looked at. Q asks; ESC skips a cutscene if
 * the script left an override, otherwise it asks too.
 :vivi            brl   MainLoop
-:esc             jsr   SaltaScena
-                 bcs   :vivi
-:chiedi          jsr   ChiediUscita
-                 brl   :vivi
 
 *=======================================================================
 * SaltaScena - ESC during a cutscene: jump to the override, carry set
@@ -644,11 +660,124 @@ ChiediUscita     _HideCursor
 :si              brl   Shutdown
 
 *=======================================================================
+* PausaGioco - SPACE, as in the DOS interpreter. The picture stays.
+*=======================================================================
+PausaGioco       _HideCursor
+                 stz   FillStart
+                 lda   #ROOMOFF
+                 sta   FillEnd
+                 lda   #$0000
+                 jsr   FillArea
+                 lda   #15
+                 jsr   SetTextColor
+                 lda   #MSGTOP
+                 sta   TxtY
+                 lda   #MsgPausa
+                 sta   zpStr
+                 lda   #^MsgPausa
+                 sta   zpStr+2
+                 jsr   DrawStrCenter
+                 _ShowCursor
+:attendi         PushWord #0
+                 PushWord #$FFFF
+                 PushPtr EventRec
+                 _GetNextEvent
+                 pla
+                 beq   :attendi
+                 lda   EvtWhat
+                 cmp   #3
+                 bne   :attendi
+                 lda   EvtMessage
+                 and   #$00FF
+                 cmp   #' '
+                 beq   :via
+                 cmp   #$1B
+                 bne   :attendi
+:via             jsr   DrawMsg
+                 rts
+
+*=======================================================================
+* ChiediRestart - Apple-8, the IIGS stand-in for F8
+*=======================================================================
+ChiediRestart    _HideCursor
+                 lda   #ROOMOFF
+                 sta   FillStart
+                 lda   #PANOFF
+                 sta   FillEnd
+                 lda   #$0000
+                 jsr   FillArea
+                 lda   #15
+                 jsr   SetTextColor
+                 lda   #ROOMTOP+52
+                 sta   TxtY
+                 lda   #MsgRest1
+                 sta   zpStr
+                 lda   #^MsgRest1
+                 sta   zpStr+2
+                 jsr   DrawStrCenter
+                 lda   #ROOMTOP+68
+                 sta   TxtY
+                 lda   #MsgQuit2
+                 sta   zpStr
+                 lda   #^MsgQuit2
+                 sta   zpStr+2
+                 jsr   DrawStrCenter
+                 _ShowCursor
+:attendi         PushWord #0
+                 PushWord #$FFFF
+                 PushPtr EventRec
+                 _GetNextEvent
+                 pla
+                 beq   :attendi
+                 lda   EvtWhat
+                 cmp   #1
+                 beq   :no
+                 cmp   #3
+                 beq   :tasto
+                 cmp   #5
+                 bne   :attendi
+:tasto           lda   EvtMessage
+                 and   #$00FF
+                 cmp   #'y'
+                 beq   :si
+                 cmp   #'Y'
+                 beq   :si
+                 cmp   #'n'
+                 beq   :no
+                 cmp   #'N'
+                 beq   :no
+                 cmp   #$1B
+                 bne   :attendi
+:no              jsr   DrawRoom
+                 jsr   DrawMsg
+                 rts
+:si              jmp   RiavviaGioco
+
+*=======================================================================
+* RiavviaGioco - same start as after LoadIndex
+*=======================================================================
+RiavviaGioco     jsr   SpegniMsg
+                 jsr   ResetVM
+                 lda   #11
+                 sta   Vars+VO_LIGHTS
+                 sta   BuioStato
+                 lda   #$00E0
+                 sta   UserIface
+                 lda   #1
+                 sta   VerbsDirty
+                 sta   PanDirty
+                 jsr   ClearScreen
+                 jsr   SetPalette
+                 lda   #1
+                 jmp   StartScript
+
+*=======================================================================
 * TastoGioco - the keys the game expects. A = the character.
 *=======================================================================
 * The DOS version uses the function keys: F1, F2 and F3 to switch
-* between kids, F5 for the disk. The IIGS has no such keys, so they come
-* in through the Apple key: Apple-1, Apple-2, Apple-3, Apple-5.
+* between kids, F5 for the disk, F8 to restart. The IIGS has no such
+* keys, so they come in through the Apple key: Apple-1, 2, 3, 5. Apple-8
+* is caught in the main loop, not here: restart is not a game key.
 * Return is 13, which in V2 means "run the sentence that is written
 * there": it is the game's own way of confirming without clicking the
 * object twice.
@@ -2238,6 +2367,7 @@ ResetVM          ldx   #0
                  sta   ActY,x
                  sta   ActFace,x
                  sta   ActFrame,x
+                 sta   ActVis,x
                  inx
                  inx
                  cpx   #NACT*2
@@ -2250,6 +2380,22 @@ ResetVM          ldx   #0
                  cpx   #NCOST*2
                  bcc   :costume
                  stz   CostNext
+
+                 ldx   #0
+                 lda   #0
+:obj             sta   ObjFlag,x
+                 inx
+                 inx
+                 cpx   #MAXOBJ
+                 bcc   :obj
+                 ldx   #0
+:inv             sta   InvObj,x
+                 inx
+                 inx
+                 cpx   #INVSLOTS*2
+                 bcc   :inv
+                 stz   SentN
+                 stz   DiscoAperto
 
                  stz   CurRoom
                  stz   Redraw
@@ -10955,6 +11101,10 @@ MsgLoad          asc   'Loading...'
 MsgQuit1         asc   'Quit the game?'
                  dfb   0
 MsgQuit2         asc   'Y = yes     N = no'
+                 dfb   0
+MsgPausa         asc   'Paused  -  SPACE to continue'
+                 dfb   0
+MsgRest1         asc   'Restart the game?'
                  dfb   0
 
 * The table of the 256 opcodes, generated from the same list verified in
