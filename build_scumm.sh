@@ -9,15 +9,24 @@
 # decompression itself.
 set -e
 cd "$(dirname "$0")"
+ROOT="$PWD"
 
 SRC="${1:-data}"
-MERLIN32="${MERLIN32:-merlin32}"
-CADIUS="${CADIUS:-cadius}"
+MERLIN32="${MERLIN32:-/Users/Michele/EMU/IIGS/Merlin32/Merlin32}"
+MERLIN_HOME="$(cd "$(dirname "$MERLIN32")" && pwd)"
+CADIUS="${CADIUS:-$ROOT/tools/bin/cadius}"
+# Merlin32 1.2 treats CR in *.Macs.s as part of the opcode, so MAC never
+# matches. Give it a Unix-LF copy of the toolkit macros.
+MACRO_DIR="$ROOT/macros"
+mkdir -p "$MACRO_DIR"
+python3 - "$MERLIN_HOME/Library" "$MACRO_DIR" <<'PY'
+import sys
+from pathlib import Path
+src, dst = Path(sys.argv[1]), Path(sys.argv[2])
+for p in src.glob('*.Macs.s'):
+    (dst / p.name).write_bytes(p.read_bytes().replace(b'\r\n', b'\n').replace(b'\r', b'\n'))
+PY
 
-# The font. src/font_orig.s is the one drawn for this project and is in
-# the repository, so a fresh clone builds and runs. If you would rather
-# have the game's own, tools/font_mm.py lifts it out of MANIAC.EXE into
-# src/fontdata.s, and that takes precedence.
 if [ ! -f src/fontdata.s ]; then
   echo "==> font: the one drawn for this project"
   cp src/font_orig.s src/fontdata.s
@@ -28,16 +37,25 @@ fi
 mkdir -p build
 
 echo "==> 65816 assembly"
-"$MERLIN32" -V src/scumm.s
+# Merlin32 v1.2: merlin32 [-V] <macro_folder> <source>
+"$MERLIN32" -V "$MACRO_DIR" "$ROOT/src/scumm.s"
 
 echo "==> disk"
 rm -rf stage build/SCUMM.2mg
 mkdir -p stage/MM
 cp src/SCUMM stage/
-for f in "$SRC"/[0-9][0-9].LFL; do
+shopt -s nullglob
+for f in "$SRC"/[0-9][0-9].LFL "$SRC"/L[0-9][0-9].LFL; do
   n=$(basename "$f" .LFL)
+  n=${n#L}
   cp "$f" "stage/MM/L$n.LFL"
 done
+shopt -u nullglob
+
+if ! ls stage/MM/L??.LFL >/dev/null 2>&1; then
+  echo "No .LFL files in $SRC" >&2
+  exit 1
+fi
 
 echo "SCUMM=Type(B3),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)" \
   > stage/_FileInformation.txt
@@ -45,9 +63,14 @@ for f in stage/MM/L??.LFL; do
   echo "$(basename "$f")=Type(06),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)"
 done > stage/MM/_FileInformation.txt
 
-"$CADIUS" CREATEVOLUME build/SCUMM.2mg SCUMM 1600KB >/dev/null
-"$CADIUS" ADDFOLDER build/SCUMM.2mg /SCUMM/ ./stage >/dev/null
-"$CADIUS" CATALOG build/SCUMM.2mg | tail -3
+if command -v "$CADIUS" >/dev/null 2>&1; then
+  "$CADIUS" CREATEVOLUME build/SCUMM.2mg SCUMM 1600KB >/dev/null
+  "$CADIUS" ADDFOLDER build/SCUMM.2mg /SCUMM/ ./stage >/dev/null
+  "$CADIUS" CATALOG build/SCUMM.2mg | tail -3
+else
+  echo "==> cadius not in PATH, packing with tools/make_2mg.py"
+  python3 tools/make_2mg.py build/SCUMM.2mg stage
+fi
 
 echo
 echo "Done: build/SCUMM.2mg"

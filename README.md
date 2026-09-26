@@ -94,32 +94,35 @@ other side. So the address is worked out in full every row, the source bank
 goes into the instruction, and the one row that would run off the end is
 copied the old way.
 
-### What the machine said about shadowing
+### Shadowing and PEI slamming
 
-The obvious next step looked like the PEI slam: draw everything in bank
-`$01` with shadowing off, then let the shadow hardware carry it to `$E1`
-by writing each changed page over itself with `PEI` - six cycles for two
-bytes, against the twenty-nine of a copy loop.
+The PEI slam (Shepherd / Wolf3D IIGS) is six cycles for two bytes: stack
+and direct page sit on a page of bank `$01` SHR memory and `PEI` rewrites
+that page onto itself so the shadow hardware copies it to `$E1`.
 
-It was built, and measured on the machine rather than argued about. Twenty
-passes over the room window, in sixtieths of a second:
+It has **not** been timed on a real IIGS for this engine. Emulator numbers
+for a *second* copy of an already-built buffer were:
 
-| | | cycles/byte |
-|---|---|---|
-| `MVN` into bank `$01` | 74 | 8.4 |
-| the slam onto `$E1` | 53 | 6.0 |
-| `MVN` straight onto `$E1` | 113 | 12.9 |
-| the old copy loop onto `$E1` | 155 | 17.7 |
+| | cycles/byte |
+|---|---|
+| `MVN` into bank `$01` | 8.4 |
+| the slam onto `$E1` | 6.0 |
+| `MVN` straight onto `$E1` | 12.9 |
 
-8.4 + 6.0 against 12.9: **the slam loses**. It pays when the same area is
-written several times between two slams, and this engine writes it once -
-the room is composed in its own buffer and the window goes across in one
-pass. So the drawing goes straight onto `$E1`, and the slam is in the
-history of this repository rather than in the code.
+`8.4 + 6.0` vs `12.9`: a slam *after* a blit into `$01` loses. This engine
+composes the room in a Memory Manager buffer (up to 960×128, which does not
+fit in the 32K shadow window `$2000–$9FFF`) and presents once with `MVN`
+onto `$E1`. The slam would win only if the visible 320×128 window were
+*drawn* in bank `$01` with shadowing off, then slammed — not if it is an
+extra hop. That layout fights scrolling (the full room has to stay in the
+heap) and has not been tried on hardware yet. `gs816.py` still models
+`$C035` and `$C002–$C005` so a hardware test can be wired without guessing
+the MMU.
 
-The emulator learned shadowing and the `$C002`-`$C005` switches for that
-experiment, and kept them: they cost nothing and the next person to wonder
-about this can try it without building the model again.
+What *was* worth doing here, independent of the slam: V2 RLE is column
+runs, so the decoder now writes a whole run before fetching the next byte;
+costume pixels walk `Pitch` instead of recomputing `RowOff` every pixel;
+erasing an actor copies with `MVN` when the row stays in one bank.
 
 ## The tools
 

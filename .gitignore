@@ -7,7 +7,14 @@ src/fontdata.s
 build/
 stage/
 src/SCUMM
+src/SCUMM_Symbols.txt
 src/*_Output.txt
+src/*Output_Error.txt
+src/error_output.txt
 src/_FileInformation.txt
+macros/
+tools/bin/
+src/macrotst*
+src/Util.Macs
 __pycache__/
 *.pyc

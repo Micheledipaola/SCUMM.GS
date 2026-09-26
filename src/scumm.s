@@ -29,12 +29,12 @@
                  typ   $B3
                  xc
                  xc
+                 use   4/Util.Macs
                  use   4/Locator.Macs
                  use   4/Mem.Macs
                  use   4/Misc.Macs
                  use   4/Event.Macs
                  use   4/Qd.Macs
-                 use   4/Util.Macs
 
 *----- screen ----------------------------------------------------------
 SHRBASE          =     $E12000
@@ -44,6 +44,11 @@ SCRW             =     160            ; bytes per screen row
 SCRW2            =     320            ; and the pixels, which are double
 SCRPIX           =     320
 ROOMROWS         =     128            ; V2's play area
+* Present via bank $01 + PEI slam. Off until timed on a real IIGS:
+* the 60 KB room cannot live in the 32 KB shadow, so this only changes
+* the visible window copy, and FillArea still writes $E1 unless the
+* whole present path is switched together.
+PEI_PRESENT      =     0
 
 * The V2 screen, the way initScreens divides it: two lines of text at
 * the top, then the room, then the panel. The scripts count rows on this
@@ -223,7 +228,7 @@ Start            phk
 *----- six direct pages: three for QuickDraw, one for the Event --------
 *      Manager, and the last one is ours.
                  PushLong #0
-                 PushLong #$00000600
+                 PushLong #$0600
                  PushWord MyID
                  PushWord #$C005
                  PushLong #0
@@ -324,6 +329,7 @@ Start            phk
 *----- go --------------------------------------------------------------
                  jsr   ClearScreen
                  jsr   SetPalette
+                 jsr   InitEspPal
                  _InitCursor
                  PushPtr FrecciaCur         ; our own arrow, which shows
                  ldx   #$1104               ; in the dark too (SetCursor)
@@ -420,22 +426,37 @@ MainLoop         jsr   Orologio
                  bra   :nodraw
 :pezzo           stz   Redraw
                  jsr   BlitRett
-:nodraw          jsr   GuardaVerbo          ; the verb under the pointer
-                 cmp   VerbLast             ; lights up, as in the DOS version
-                 beq   :stesso
-                 sta   VerbLast
-                 lda   #1
-                 sta   VerbsDirty
-                 lda   #1
-                 sta   PanDirty
-:stesso          lda   VerbsDirty
+:nodraw          jsr   GuardaVerbo
+* Hover is not a panel rebuild: only the verb that goes dark and the one
+* that lights up are rewritten. verbOps still sets VerbsDirty for a
+* full redraw (new names, on/off).
+                 lda   VerbsDirty
+                 bne   :tutti
+                 lda   VerbHover
+                 cmp   VerbHoverLast
                  beq   :noverb
-                 stz   VerbsDirty
+                 jsr   DipingiCambioVerbo
+                 bra   :noverb
+:tutti           stz   VerbsDirty
                  jsr   DrawVerbs
+                 lda   VerbHover
+                 sta   VerbHoverLast
 
 * the sentence being built: if one of its four parts changed it is
 * rewritten, without touching the rest of the panel
-:noverb          lda   Vars+VO_SENTVERB
+:noverb          lda   SentHot
+                 cmp   SentHotLast
+                 beq   :fraseok
+                 sta   SentHotLast
+                 lda   #1
+                 sta   PanDirty
+:fraseok         lda   InvHot
+                 cmp   InvHotLast
+                 beq   :invok
+                 sta   InvHotLast
+                 lda   #1
+                 sta   InvDirty
+:invok           lda   Vars+VO_SENTVERB
                  clc
                  adc   Vars+VO_SENTOBJ1
                  clc
@@ -935,14 +956,44 @@ Decipher         inc   a                    ; round up to whole words
                  lsr   a
                  sta   DecN
                  ldy   #0
+                 and   #3
+                 beq   :gruppi
+                 tax                        ; leftover words, 1..3
+:resto           lda   [zpStr],y
+                 eor   #$FFFF
+                 sta   [zpStr],y
+                 iny
+                 iny
+                 dex
+                 bne   :resto
+:gruppi          lda   DecN
+                 lsr   a
+                 lsr   a
+                 beq   :fine
+                 tax
 :lp              lda   [zpStr],y
                  eor   #$FFFF
                  sta   [zpStr],y
                  iny
                  iny
-                 dec   DecN
+                 lda   [zpStr],y
+                 eor   #$FFFF
+                 sta   [zpStr],y
+                 iny
+                 iny
+                 lda   [zpStr],y
+                 eor   #$FFFF
+                 sta   [zpStr],y
+                 iny
+                 iny
+                 lda   [zpStr],y
+                 eor   #$FFFF
+                 sta   [zpStr],y
+                 iny
+                 iny
+                 dex
                  bne   :lp
-                 rts
+:fine            rts
 
 *=======================================================================
 * OpenLFL - open file FileNo. Tries MM/NN.LFL and then 1/MM/NN.LFL
@@ -1316,9 +1367,7 @@ StartAnim        pha
                  pla
                  ldx   ActIdx
                  sta   ActFrame,x
-                 lda   #1
-                 sta   ActDirty
-                 rts
+                 jmp   SegnaAttore
 
 *=======================================================================
 * SetFacing - A = facing (0 left, 1 right, 2 front, 3 back)
@@ -1329,10 +1378,18 @@ SetFacing        ldx   ActIdx
                  cmp   ActFace,x
                  bne   :cambia
                  rts
-* The counter is its own: CostDecode uses LimbNo for its own loop, and
-* if they shared it the loop would end after the first limb. That is why
-* the head stayed facing the player while the body turned.
+* CostDecode walks LimbNo itself, so this loop has its own counter.
+* Each limb may come from a different chore (head vs walk). Calling
+* StartAnim once per limb re-decoded the same chore up to sixteen times;
+* we remember which frame numbers we have already applied.
 :cambia          sta   ActFace,x
+                 jsr   SegnaAttore
+                 ldx   #62
+                 lda   #0
+:clr             sta   AnimSeen,x
+                 dex
+                 dex
+                 bpl   :clr
                  stz   SetLimb
 :lp              lda   SetLimb
                  sta   LimbNo
@@ -1342,7 +1399,25 @@ SetFacing        ldx   ActIdx
                  beq   :avanti
                  lsr   a                    ; the facing was in the two bits
                  lsr   a                    ; low: the frame is left
-                 jsr   StartAnim
+                 sta   DecFrame
+                 cmp   #64
+                 bcs   :ridecod             ; rare: no room in the seen table
+                 tax
+                 sep   #$20
+                 mx    %10
+                 lda   AnimSeen,x
+                 bne   :gia8
+                 lda   #1
+                 sta   AnimSeen,x
+                 rep   #$20
+                 mx    %00
+                 lda   DecFrame
+                 jsr   CostDecode
+                 bra   :avanti
+:gia8            rep   #$20
+                 mx    %00
+                 bra   :avanti
+:ridecod         jsr   CostDecode
 :avanti          inc   SetLimb
                  lda   SetLimb
                  cmp   #16
@@ -1730,6 +1805,9 @@ DrawLimb         lda   LimbNo               ; where its frames are
 * further.
 PaintCel         stz   CelCol
                  stz   CelRun
+                 lda   Vars+VO_LIGHTS
+                 and   #8
+                 sta   CelLit
 :colonna         lda   MirrorOn
                  bne   :dritto
                  lda   CelW                 ; mirrored: the last column
@@ -1755,11 +1833,9 @@ PaintCel         stz   CelCol
                  lsr   a
                  lsr   a
                  sta   CelColor
-* With the lights off the game does not draw the characters in their own
-* colours but all in grey: you can see where they are and when they move,
-* and nothing else. Bit 3 of variable 12 is what says so.
-                 lda   Vars+VO_LIGHTS
-                 and   #8
+* Lights bit 3 is read once per cel, not once per run: in the dark every
+* non-transparent pixel is grey (8), as in the original.
+                 lda   CelLit
                  bne   :coloreok
                  lda   CelColor
                  beq   :coloreok
@@ -1775,91 +1851,37 @@ PaintCel         stz   CelCol
                  sta   CelRun
                  inc   CelSrc
 
-:dentro          lda   CelColor
-                 bne   :cisono              ; zero = transparent
-:salta2          brl   :salta               ; trampoline: from here to :salta
-:cisono          lda   CelPx                ; short branches no longer reach
-                 bmi   :salta2              ; short
-                 cmp   RoomW
-                 bcs   :salta2
-                 lda   CelRow
-                 clc
-                 adc   CelY
-                 bmi   :salta2
-                 cmp   RoomH
-                 bcs   :salta2
-                 cmp   #ROOMROWS
-                 bcs   :salta2
-                 sta   CelRy
+:dentro          lda   CelH
+                 sec
+                 sbc   CelRow
+                 beq   :finecol
+                 sta   RunNow
+                 lda   CelRun
+                 cmp   RunNow
+                 bcs   :cap
+                 sta   RunNow
+:cap             lda   CelRun
+                 sec
+                 sbc   RunNow
+                 sta   CelRun
 
-* If the box the character stands on has a mask, the background at this
-* point may pass in front of him: a set bit means the pixel stays the
-* room's own.
-                 lda   MascAtt
-                 beq   :scoperto
-                 lda   CelRy
-                 asl   a
-                 tax
-                 lda   MaskRow,x
-                 sta   TmpW
-                 lda   CelPx
-                 lsr   a
-                 lsr   a
-                 lsr   a
-                 clc
-                 adc   TmpW
-                 tay
-                 lda   [zpMask],y
-                 and   #$00FF
-                 sta   TmpW2
-                 lda   CelPx
-                 and   #$0007
-                 asl   a
-                 tax
-                 lda   BitMasc,x
-                 and   TmpW2
-                 bne   :salta2
-
-:scoperto        lda   CelRy
-                 asl   a
-                 tax
-                 lda   RowOff,x
-                 sta   TmpW
-                 lda   CelPx
-                 lsr   a
-                 clc
-                 adc   TmpW
-                 tay
-                 lda   CelPx
-                 and   #1
-                 bne   :basso
-                 sep   #$20                 ; even pixel: high nibble
-                 mx    %10
                  lda   CelColor
-                 asl   a
-                 asl   a
-                 asl   a
-                 asl   a
-                 sta   TmpW2
-                 lda   [zpPix],y
-                 and   #$0F
-                 ora   TmpW2
-                 sta   [zpPix],y
-                 rep   #$20
-                 mx    %00
-                 bra   :salta
-:basso           sep   #$20
-                 mx    %10
-                 lda   [zpPix],y
-                 and   #$F0
-                 ora   CelColor
-                 sta   [zpPix],y
-                 rep   #$20
-                 mx    %00
-
-:salta           dec   CelRun
-                 inc   CelRow
-                 lda   CelRow
+                 beq   :trasp               ; zero = skip that many rows
+                 lda   MascAtt
+                 bne   :lento
+                 lda   CelPx
+                 bmi   :trasp
+                 cmp   RoomW
+                 bcs   :trasp
+                 jsr   CelRunFast
+                 bra   :dopo
+:lento           jsr   CelRunMask
+                 bra   :dopo
+:trasp           lda   CelRow
+                 clc
+                 adc   RunNow
+                 sta   CelRow
+:dopo            lda   CelRow
                  cmp   CelH
                  bcs   :finecol
                  brl   :pixel
@@ -1870,6 +1892,243 @@ PaintCel         stz   CelCol
                  bcs   :fine
                  brl   :colonna
 :fine            rts
+
+* CelRunFast - RunNow opaque pixels, no walk-box mask, CelPx on screen.
+* Clip to the visible rows once. CelRow still advances by the full run
+* (PaintCel has already eaten that many pixels from the stream). The
+* pixel loop only writes; it does not use X as a counter.
+CelRunFast       lda   CelRow
+                 clc
+                 adc   CelY
+                 sta   CelRy
+                 lda   CelPx
+                 bmi   :tuttofuori
+                 cmp   RoomW
+                 bcs   :tuttofuori
+                 lsr   a
+                 sta   TmpW
+                 lda   CelPx
+                 and   #1
+                 sta   Dispari
+                 lda   CelColor
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 sta   TmpW2
+:skip            lda   RunNow
+                 bne   :c_e
+                 rts
+:c_e             lda   CelRy
+                 bmi   :salta
+                 cmp   RoomH
+                 bcs   :tuttofuori
+                 cmp   #ROOMROWS
+                 bcs   :tuttofuori
+                 bra   :pronto
+:salta           inc   CelRy
+                 inc   CelRow
+                 dec   RunNow
+                 bra   :skip
+:tuttofuori      lda   CelRow
+                 clc
+                 adc   RunNow
+                 sta   CelRow
+                 rts
+
+:pronto          lda   RoomH
+                 cmp   #ROOMROWS
+                 bcc   :hok
+                 lda   #ROOMROWS
+:hok             sec
+                 sbc   CelRy
+                 beq   :resto
+                 bcc   :resto
+                 cmp   RunNow
+                 bcc   :vis
+                 lda   RunNow
+:vis             sta   CelVis
+                 lda   CelRy
+                 asl   a
+                 tax
+                 lda   RowOff,x
+                 clc
+                 adc   TmpW
+                 tay
+                 lda   Dispari
+                 bne   :lpbasso
+
+:lpalto          sep   #$20
+                 mx    %10
+                 lda   [zpPix],y
+                 and   #$0F
+                 ora   TmpW2
+                 sta   [zpPix],y
+                 rep   #$20
+                 mx    %00
+                 tya
+                 clc
+                 adc   Pitch
+                 tay
+                 dec   CelVis
+                 bne   :lpalto
+                 bra   :resto
+
+:lpbasso         sep   #$20
+                 mx    %10
+                 lda   [zpPix],y
+                 and   #$F0
+                 ora   CelColor
+                 sta   [zpPix],y
+                 rep   #$20
+                 mx    %00
+                 tya
+                 clc
+                 adc   Pitch
+                 tay
+                 dec   CelVis
+                 bne   :lpbasso
+
+:resto           lda   CelRow
+                 clc
+                 adc   RunNow
+                 sta   CelRow
+                 rts
+
+* CelRunMask - same clip, then the walk-box bit (fence, furniture).
+* The column's mask bit and nibble stay fixed; Dispari is not retested.
+CelRunMask       lda   CelRow
+                 clc
+                 adc   CelY
+                 sta   CelRy
+                 lda   CelPx
+                 bmi   :tuttofuori
+                 cmp   RoomW
+                 bcs   :tuttofuori
+                 lsr   a
+                 sta   TmpW
+                 lda   CelPx
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 sta   CelMcol
+                 lda   CelPx
+                 and   #7
+                 asl   a
+                 tax
+                 lda   BitMasc,x
+                 sta   CelMbit
+                 lda   CelPx
+                 and   #1
+                 sta   Dispari
+                 lda   CelColor
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 sta   TmpW2
+:skip            lda   RunNow
+                 bne   :c_e
+                 rts
+:c_e             lda   CelRy
+                 bmi   :salta
+                 cmp   RoomH
+                 bcs   :tuttofuori
+                 cmp   #ROOMROWS
+                 bcs   :tuttofuori
+                 bra   :pronto
+:salta           inc   CelRy
+                 inc   CelRow
+                 dec   RunNow
+                 bra   :skip
+:tuttofuori      lda   CelRow
+                 clc
+                 adc   RunNow
+                 sta   CelRow
+                 rts
+
+:pronto          lda   RoomH
+                 cmp   #ROOMROWS
+                 bcc   :hok
+                 lda   #ROOMROWS
+:hok             sec
+                 sbc   CelRy
+                 bne   :nz
+                 brl   :resto
+:nz              bcs   :cvis
+                 brl   :resto
+:cvis            cmp   RunNow
+                 bcc   :vis
+                 lda   RunNow
+:vis             sta   CelVis
+                 lda   CelRy
+                 asl   a
+                 tax
+                 lda   RowOff,x
+                 clc
+                 adc   TmpW
+                 sta   PixOff
+                 lda   MaskRow,x
+                 clc
+                 adc   CelMcol
+                 sta   MskOff
+                 lda   Dispari
+                 bne   :lpbasso
+
+:lpalto          ldy   MskOff
+                 lda   [zpMask],y
+                 and   CelMbit
+                 bne   :sa
+                 ldy   PixOff
+                 sep   #$20
+                 mx    %10
+                 lda   [zpPix],y
+                 and   #$0F
+                 ora   TmpW2
+                 sta   [zpPix],y
+                 rep   #$20
+                 mx    %00
+:sa              lda   PixOff
+                 clc
+                 adc   Pitch
+                 sta   PixOff
+                 lda   MskOff
+                 clc
+                 adc   MaskPitch
+                 sta   MskOff
+                 dec   CelVis
+                 bne   :lpalto
+                 bra   :resto
+
+:lpbasso         ldy   MskOff
+                 lda   [zpMask],y
+                 and   CelMbit
+                 bne   :sb
+                 ldy   PixOff
+                 sep   #$20
+                 mx    %10
+                 lda   [zpPix],y
+                 and   #$F0
+                 ora   CelColor
+                 sta   [zpPix],y
+                 rep   #$20
+                 mx    %00
+:sb              lda   PixOff
+                 clc
+                 adc   Pitch
+                 sta   PixOff
+                 lda   MskOff
+                 clc
+                 adc   MaskPitch
+                 sta   MskOff
+                 dec   CelVis
+                 bne   :lpbasso
+
+:resto           lda   CelRow
+                 clc
+                 adc   RunNow
+                 sta   CelRow
+                 rts
 
 *=======================================================================
 * ResetVM - variables to zero, no script alive
@@ -1916,6 +2175,12 @@ ResetVM          ldx   #0
 
                  stz   CurRoom
                  stz   Redraw
+                 stz   ActTutti
+                 stz   VerbHoverLast
+                 stz   SentHotLast
+                 stz   InvHotLast
+                 lda   #$FFFF
+                 sta   TxtYCache
                  rts
 
 *=======================================================================
@@ -2818,8 +3083,7 @@ AnimUno          lda   ActCost,x            ; this costume's commands
                  and   #$007F
                  cmp   TmpW
                  beq   :avanti
-                 lda   #1
-                 sta   ActDirty
+                 jsr   SegnaAttore
 :avanti          inc   LimbNo
                  lda   LimbNo
                  cmp   #16
@@ -2940,9 +3204,7 @@ MoveUno          ldx   ActIdx
                  sta   ActX,x
 :versoy          anop
 
-:fatto           lda   #1
-                 sta   ActDirty
-                 rts
+:fatto           jmp   SegnaAttore
 
 ArrivatoQui      ldx   ActIdx
                  lda   ActUltima,x          ; was it only a waypoint?
@@ -2952,17 +3214,14 @@ ArrivatoQui      ldx   ActIdx
                  lda   ActMoving,x
                  beq   :basta
                  jsr   VersoCammino
-                 lda   #1
-                 sta   ActDirty
-                 rts
+                 jmp   SegnaAttore
 :basta           ldx   ActIdx
                  stz   ActMoving,x
                  stz   ActErr,x
                  stz   ActUltima,x
                  lda   #1                   ; standing still
                  jsr   StartAnim
-                 lda   #1
-                 sta   ActDirty
+                 rts
                  rts
 
 *=======================================================================
@@ -3650,15 +3909,22 @@ RidisegnaAttori  lda   RoomH
                  bne   :lavoro
                  rts
 
-* Two passes. In the first, every character is erased from where he was,
-* using the box measured the last time he was drawn: underneath go the
-* background and the lit objects. Then they are all redrawn, which
-* updates the boxes. In the second pass the new boxes are marked too,
-* otherwise the freshly drawn part would never reach the screen.
-:lavoro          stz   ActDirty
+* Two passes. In the first, dirty characters (and anyone whose box
+* touches theirs) are erased from where they were. Then only those are
+* redrawn. Idle people on the other side of the room stay in the buffer.
+:lavoro          lda   ActTutti
+                 beq   :pochi
+                 jsr   MarcaTuttiAttori
+                 bra   :via
+:pochi           jsr   EspandiAttori
+:via             stz   ActDirty
+                 stz   ActTutti
                  stz   ActIdx
 :pulisci         jsr   AttoreInScena
                  bcs   :pross1
+                 ldx   ActIdx
+                 lda   ActSporco,x
+                 beq   :pross1
                  jsr   ScatolaVecchia
                  bcs   :pross1
                  jsr   PuliscoRett
@@ -3700,20 +3966,171 @@ RidisegnaAttori  lda   RoomH
                  cmp   #NACT*2
                  bcc   :pulisci
 
-                 jsr   DrawActors
+                 jsr   DrawAttoriSporchi
 
                  stz   ActIdx
 :segna           jsr   AttoreInScena
                  bcs   :pross2
+                 ldx   ActIdx
+                 lda   ActSporco,x
+                 beq   :pulito
                  jsr   ScatolaVecchia
-                 bcs   :pross2
+                 bcs   :pulito
                  jsr   SegnaRett
+:pulito          ldx   ActIdx
+                 stz   ActSporco,x
 :pross2          lda   ActIdx
                  clc
                  adc   #2
                  sta   ActIdx
                  cmp   #NACT*2
                  bcc   :segna
+                 rts
+
+*=======================================================================
+* SegnaAttore - this actor's picture changed
+*=======================================================================
+SegnaAttore      ldx   ActIdx
+                 lda   #1
+                 sta   ActSporco,x
+                 sta   ActDirty
+                 rts
+
+MarcaTuttiAttori lda   ActIdx
+                 pha
+                 stz   ActIdx
+:lp              jsr   AttoreInScena
+                 bcs   :avanti
+                 ldx   ActIdx
+                 lda   #1
+                 sta   ActSporco,x
+:avanti          lda   ActIdx
+                 clc
+                 adc   #2
+                 sta   ActIdx
+                 cmp   #NACT*2
+                 bcc   :lp
+                 pla
+                 sta   ActIdx
+                 rts
+
+* Two passes: a dirty walker must also refresh whoever he walks onto
+* (new feet) and whoever he leaves (old box).
+EspandiAttori    lda   #2
+                 sta   EspandiN
+:pass            lda   ActIdx
+                 pha
+                 stz   ActIdx
+:lp              jsr   AttoreInScena
+                 bcs   :avanti
+                 ldx   ActIdx
+                 lda   ActSporco,x
+                 beq   :avanti
+                 jsr   ScatolaVecchia
+                 bcs   :piedi
+                 jsr   CopiaDstAgg
+                 jsr   MarcaToccatiDaAgg
+:piedi           jsr   ScatolaPiedi
+                 bcs   :avanti
+                 jsr   CopiaDstAgg
+                 jsr   MarcaToccatiDaAgg
+:avanti          lda   ActIdx
+                 clc
+                 adc   #2
+                 sta   ActIdx
+                 cmp   #NACT*2
+                 bcc   :lp
+                 pla
+                 sta   ActIdx
+                 dec   EspandiN
+                 bne   :pass
+                 rts
+
+CopiaDstAgg      lda   DstX
+                 sta   AggX
+                 lda   DstY
+                 sta   AggY
+                 lda   DstX
+                 clc
+                 adc   BlkW
+                 sta   AggR
+                 lda   DstY
+                 clc
+                 adc   BlkH
+                 sta   AggB
+                 rts
+
+MarcaToccatiDaAgg lda  ActIdx
+                 sta   TmpAct
+                 stz   ActScan
+:lp              lda   ActScan
+                 cmp   TmpAct
+                 beq   :avanti
+                 sta   ActIdx
+                 jsr   AttoreInScena
+                 bcs   :avanti
+                 jsr   ScatolaVecchia
+                 bcs   :avanti
+                 jsr   IntersecaAgg
+                 bcs   :avanti
+                 ldx   ActScan
+                 lda   #1
+                 sta   ActSporco,x
+:avanti          lda   ActScan
+                 clc
+                 adc   #2
+                 sta   ActScan
+                 cmp   #NACT*2
+                 bcc   :lp
+                 lda   TmpAct
+                 sta   ActIdx
+                 rts
+
+* Carry set if Dst rectangle misses Agg.
+IntersecaAgg     lda   DstX
+                 cmp   AggR
+                 bcs   :no
+                 lda   DstX
+                 clc
+                 adc   BlkW
+                 cmp   AggX
+                 beq   :no
+                 bcc   :no
+                 lda   DstY
+                 cmp   AggB
+                 bcs   :no
+                 lda   DstY
+                 clc
+                 adc   BlkH
+                 cmp   AggY
+                 beq   :no
+                 bcc   :no
+                 clc
+                 rts
+:no              sec
+                 rts
+
+DrawAttoriSporchi lda  RoomH
+                 bne   :c_e
+                 rts
+:c_e             stz   ActIdx
+:lp              ldx   ActIdx
+                 lda   ActSporco,x
+                 beq   :prossimo
+                 lda   ActCost,x
+                 beq   :prossimo
+                 lda   ActRoom,x
+                 cmp   CurRoom
+                 bne   :prossimo
+                 lda   ActVis,x
+                 beq   :prossimo
+                 jsr   DrawActor
+:prossimo        lda   ActIdx
+                 clc
+                 adc   #2
+                 sta   ActIdx
+                 cmp   #NACT*2
+                 bcc   :lp
                  rts
 
 *=======================================================================
@@ -3810,7 +4227,11 @@ ScatolaVecchia   ldx   ActIdx
                  clc
                  rts
 
-:grande          ldx   ActIdx
+:grande          jmp   ScatolaPiedi
+:vuota           sec
+                 rts
+
+ScatolaPiedi     ldx   ActIdx
                  lda   ActX,x
                  asl   a
                  asl   a
@@ -3831,7 +4252,6 @@ ScatolaVecchia   ldx   ActIdx
                  sta   BlkW
                  beq   :vuota
                  bmi   :vuota
-
                  ldx   ActIdx
                  lda   ActY,x
                  asl   a
@@ -5225,7 +5645,8 @@ ColoreVoce       sta   ChiParla
 *=======================================================================
 * Bit 7 of a byte ends a word (a space follows), values below eight are
 * control codes, and from four up the code carries another byte with it.
-* Code 1 is the line break.
+* Code 1 is the line break. '^' is not a terminator: V2's EGA font drew
+* three dots in that slot (Dave's opening "...."), so we expand it here.
 CatchStr         stz   MsgLen
 :lp              jsr   FetchB
                  beq   :fine
@@ -5250,7 +5671,16 @@ CatchStr         stz   MsgLen
                  jsr   FetchB
                  bra   :spazio
 
-:stampabile      jsr   PushMsg
+:stampabile      cmp   #'^'
+                 bne   :unchar
+                 lda   #'.'
+                 jsr   PushMsg
+                 lda   #'.'
+                 jsr   PushMsg
+                 lda   #'.'
+                 jsr   PushMsg
+                 bra   :spazio
+:unchar          jsr   PushMsg
 :spazio          lda   ChTmp
                  and   #$0080
                  beq   :lp
@@ -5866,18 +6296,44 @@ LeggiObj         lda   #28                  ; the first table holds the
 PuliscoRett      lda   BlkW
                  lsr   a
                  sta   TmpW2                ; bytes to copy per row
+                 beq   :fine
+                 dec   a
+                 sta   MvnC
+                 lda   zpBg
+                 sta   MvnPtrS
+                 lda   zpPix
+                 sta   MvnPtrD
+                 lda   zpBg+2
+                 sta   MvnSrcB
+                 lda   zpPix+2
+                 sta   MvnDstB
                  lda   DstX
                  lsr   a
                  sta   ColByte              ; the column, in bytes
                  lda   DstY
                  sta   Riga
-:riga            lda   Riga
                  asl   a
                  tax
                  lda   RowOff,x
                  clc
                  adc   ColByte
-                 tay
+                 sta   MvnS
+:riga            jsr   MvnZp
+                 bcs   :lento
+:okriga          inc   Riga
+                 lda   Riga
+                 sec
+                 sbc   DstY
+                 cmp   BlkH
+                 bcs   :fine
+                 lda   MvnS
+                 clc
+                 adc   Pitch
+                 sta   MvnS
+                 bra   :riga
+:fine            rts
+
+:lento           ldy   MvnS
                  ldx   #0
 :pix             lda   [zpBg],y
                  sta   [zpPix],y
@@ -5887,13 +6343,7 @@ PuliscoRett      lda   BlkW
                  inx
                  cpx   TmpW2
                  bcc   :pix
-                 inc   Riga
-                 lda   Riga
-                 sec
-                 sbc   DstY
-                 cmp   BlkH
-                 bcc   :riga
-                 rts
+                 bra   :okriga
 
 *=======================================================================
 * AggiornaOggetto - redraw an object when its state changes
@@ -5932,6 +6382,7 @@ AggiornaOggetto  lda   RoomH
 * makes the next frame draw them again and put them right.
                  lda   #1
                  sta   ActDirty
+                 sta   ActTutti
                  sta   DaComporre           ; and the masks are no longer right
 
                  lda   AggX                 ; what goes to the screen is that
@@ -5986,21 +6437,26 @@ RidisegnaRett    lda   Vars+VO_LIGHTS
                  tay
                  lda   [zpRaw],y
                  sta   ObjCd
-                 beq   :prossimo
-                 clc
+                 bne   :c_eobj
+                 brl   :prossimo
+:c_eobj          clc
                  adc   #4
                  tay
                  lda   [zpRaw],y
                  sta   ObjNo
                  jsr   GetObjState
                  and   #8
-                 beq   :prossimo
-                 lda   AggLen
+                 bne   :acceso
+                 brl   :prossimo
+:acceso          lda   AggLen
                  sta   PadreLen
                  jsr   PadreOk
-                 bcs   :prossimo
-                 jsr   LeggiObj
-                 bcs   :prossimo
+                 bcc   :padreok
+                 brl   :prossimo
+:padreok         jsr   LeggiObj
+                 bcc   :letto
+                 brl   :prossimo
+:letto           anop
 
                  lda   DstX                 ; do they touch?
                  cmp   AggR
@@ -6023,7 +6479,27 @@ RidisegnaRett    lda   Vars+VO_LIGHTS
 
                  lda   ObjImgOff
                  sta   SrcOff
-                 lda   AggX                 ; only inside the piece being redone
+                 lda   DstX
+                 cmp   AggX
+                 bcc   :clip
+                 lda   DstY
+                 cmp   AggY
+                 bcc   :clip
+                 lda   DstX
+                 clc
+                 adc   BlkW
+                 cmp   AggR
+                 beq   :dentro
+                 bcs   :clip
+:dentro          lda   DstY
+                 clc
+                 adc   BlkH
+                 cmp   AggB
+                 beq   :noclip
+                 bcs   :clip
+:noclip          stz   ClipOn
+                 bra   :decod
+:clip            lda   AggX
                  sta   ClipX1
                  lda   AggR
                  sta   ClipX2
@@ -6033,7 +6509,7 @@ RidisegnaRett    lda   Vars+VO_LIGHTS
                  sta   ClipY2
                  lda   #1
                  sta   ClipOn
-                 jsr   DecodeRLE
+:decod           jsr   DecodeRLE
                  stz   ClipOn
 
 :prossimo        lda   AggIdx
@@ -6199,43 +6675,46 @@ BlitRettReal     lda   DirtyB               ; clip to what is visible
 
                  lda   DirtyY
                  sta   Riga
-:riga            lda   Riga
                  asl   a
                  tax
                  lda   RowOff,x
                  clc
                  adc   ColRoom
-                 tay                        ; Y: the row in the buffer
-
-                 lda   Riga                 ; X: the row on screen,
-                 clc                        ; below the speech line
+                 sta   MvnS
+                 lda   DirtyY
+                 clc
                  adc   #ROOMTOP
                  asl   a
                  asl   a
                  asl   a
                  asl   a
                  asl   a
-                 sta   TmpW                 ; row * 32
+                 sta   TmpW
                  asl   a
-                 asl   a                    ; row * 128
+                 asl   a
                  clc
-                 adc   TmpW                 ; row * 160
+                 adc   TmpW
                  clc
                  adc   ColScr
-                 tax
-
-                 stx   MvnD                 ; X is where it goes on screen,
-                 sty   MvnS                 ; Y where it comes from
+                 sta   MvnD
                  lda   ByteCount
                  dec   a
                  sta   MvnC
-                 jsr   MvnRiga
-
+:riga            jsr   MvnRiga
                  inc   Riga
                  lda   Riga
                  cmp   DirtyB
-                 bcc   :riga
-                 rts
+                 bcs   :blitok
+                 lda   MvnS
+                 clc
+                 adc   Pitch
+                 sta   MvnS
+                 lda   MvnD
+                 clc
+                 adc   #SCRW
+                 sta   MvnD
+                 bra   :riga
+:blitok          rts
 
 *=======================================================================
 * DrawRoom - blit the whole window that starts at ScrollX
@@ -6433,6 +6912,57 @@ MvnPiedi         ldy   MvnS
                  rts
 
 *=======================================================================
+* MvnZp - copy MvnC+1 bytes at offset MvnS from MvnPtrS/MvnSrcB
+*         to MvnPtrD/MvnDstB. Carry set if the copy would wrap a bank.
+*=======================================================================
+MvnZp            lda   MvnS
+                 clc
+                 adc   MvnPtrS
+                 tax
+                 lda   #0
+                 adc   #0
+                 bne   :fail
+                 txa
+                 clc
+                 adc   MvnC
+                 bcs   :fail
+                 lda   MvnS
+                 clc
+                 adc   MvnPtrD
+                 tay
+                 lda   #0
+                 adc   #0
+                 bne   :fail
+                 tya
+                 clc
+                 adc   MvnC
+                 bcs   :fail
+                 lda   MvnS
+                 clc
+                 adc   MvnPtrS
+                 tax
+                 lda   MvnS
+                 clc
+                 adc   MvnPtrD
+                 tay
+                 sep   #$20
+                 mx    %10
+                 lda   MvnDstB
+                 sta   MvnZpOp+1
+                 lda   MvnSrcB
+                 sta   MvnZpOp+2
+                 rep   #$30
+                 mx    %00
+                 lda   MvnC
+MvnZpOp          mvn   $00,$00
+                 phk
+                 plb
+                 clc
+                 rts
+:fail            sec
+                 rts
+
+*=======================================================================
 * ClearScreen / SetPalette / FillArea
 *=======================================================================
 ClearScreen      stz   FillStart
@@ -6442,7 +6972,35 @@ ClearScreen      stz   FillStart
                  jsr   FillArea
                  rts
 
-FillArea         ldx   FillStart
+FillArea         sta   FillCol
+                 lda   FillEnd
+                 sec
+                 sbc   FillStart
+                 cmp   #8
+                 bcc   FillLento
+                 ldx   FillStart
+                 lda   FillCol
+                 stal  SHRBASE,x
+                 lda   FillStart
+                 clc
+                 adc   #$2000
+                 tax
+                 clc
+                 adc   #2
+                 tay
+                 lda   FillEnd
+                 sec
+                 sbc   FillStart
+                 sec
+                 sbc   #3
+                 bcc   FillLento
+                 jmp   FillDoMvn
+FillDoMvn        mvn   $E1,$E1
+                 phk
+                 plb
+                 rts
+FillLento        ldx   FillStart
+                 lda   FillCol
 :lp              stal  SHRBASE,x
                  inx
                  inx
@@ -7928,16 +8486,25 @@ DrawVerbsReal    lda   #VERBTOP*SCRW
                  jsr   FillArea
 * from here down it only writes: for callers that have already cleared
 DrawVerbiSoli    stz   VerbIdx
-:lp              ldx   VerbIdx
-                 lda   VerbId,x
-                 beq   :prossimo
-                 lda   VerbOn,x
-                 beq   :prossimo
+:lp              jsr   DrawUnoVerbo
+                 lda   VerbIdx
+                 clc
+                 adc   #2
+                 sta   VerbIdx
+                 cmp   #NVERBS*2
+                 bcc   :lp
+                 lda   #15
+                 jsr   SetTextColor
+                 rts
 
-* Three colours, as in the DOS version: a verb the game has disabled
-* stays written but dim, the one under the pointer lights up, the others
-* sit at rest.
+*=======================================================================
+* DrawUnoVerbo - one slot (VerbIdx): colour from on/off and VerbHover
+*=======================================================================
+DrawUnoVerbo     ldx   VerbIdx
+                 lda   VerbId,x
+                 beq   :fine
                  lda   VerbOn,x
+                 beq   :fine
                  cmp   #1
                  beq   :vivo
                  lda   #COLVERBDIM
@@ -7950,7 +8517,6 @@ DrawVerbiSoli    stz   VerbIdx
                  bra   :coloreok
 :acceso          lda   #COLVERBHI
 :coloreok        jsr   SetTextColor
-
                  ldx   VerbIdx
                  lda   VerbX,x
                  lsr   a
@@ -7959,31 +8525,52 @@ DrawVerbiSoli    stz   VerbIdx
                  sta   TxtX
                  lda   VerbY,x
                  sta   TxtY
-
                  lda   VerbIdx
-                 lsr   a                    ; slot
+                 lsr   a
                  sta   TmpW
                  asl   a
                  clc
-                 adc   TmpW                 ; times three
+                 adc   TmpW
                  asl   a
-                 asl   a                    ; and by four: twelve
+                 asl   a
                  clc
                  adc   #VerbName
                  sta   zpStr
                  lda   #^VerbName
                  sta   zpStr+2
                  jsr   DrawStr
+:fine            rts
 
-:prossimo        lda   VerbIdx
-                 clc
-                 adc   #2
-                 sta   VerbIdx
-                 cmp   #NVERBS*2
-                 bcc   :lp
-                 lda   #15
-                 jsr   SetTextColor
+*=======================================================================
+* DipingiCambioVerbo - un-light the previous verb, light the new one
+*=======================================================================
+* DrawChar writes the whole 8x8 cell (empty bits come out black), so the
+* old colour is overwritten. No need to black the whole verb band.
+DipingiCambioVerbo anop
+                 lda   UserIface
+                 and   #$0080
+                 beq   :salva
+                 _HideCursor
+                 lda   VerbHoverLast
+                 jsr   DisegnaVerboHover
+                 lda   VerbHover
+                 jsr   DisegnaVerboHover
+                 _ShowCursor
+:salva           lda   VerbHover
+                 sta   VerbHoverLast
                  rts
+
+* A = hover index plus one (zero: nothing). VerbHover is VerbIdx+1
+* and VerbIdx is already the slot times two, so do not shift again.
+DisegnaVerboHover anop
+                 cmp   #0
+                 beq   :fine
+                 dec   a
+                 cmp   #NVERBS*2
+                 bcs   :fine
+                 sta   VerbIdx
+                 jsr   DrawUnoVerbo
+:fine            rts
 
 *=======================================================================
 * DrawFrase - the line of the sentence being built
@@ -8549,16 +9136,31 @@ GuardaVerbo      PushPtr PuntoMou
 *=======================================================================
 * Loading a room on the IIGS takes nearly a second. Without this the last
 * frame of the previous one stays on screen the whole time, and it reads
-* as a freeze.
+* as a freeze. "Loading..." sits in the black playfield until DrawRoom
+* puts the new picture on top of it.
 SpegniScena      _HideCursor
                  stz   FillStart
                  lda   #PANOFF
                  sta   FillEnd
                  lda   #$0000
                  jsr   FillArea
+                 jsr   MostraCarico
                  _ShowCursor
                  jsr   DrawMsg              ; and away with the old sentence,
                  rts                        ; at once: not when loading ends
+
+*=======================================================================
+* MostraCarico - centred in the play area, on the black just laid down
+*=======================================================================
+MostraCarico     lda   #15
+                 jsr   SetTextColor
+                 lda   #ROOMTOP+60          ; middle of the 128-row room
+                 sta   TxtY
+                 lda   #MsgLoad
+                 sta   zpStr
+                 lda   #^MsgLoad
+                 sta   zpStr+2
+                 jmp   DrawStrCenter
 
 *=======================================================================
 * ChangeRoom - A = room number
@@ -8719,13 +9321,7 @@ DecodeRoom       ldy   #4
 * without decompressing the whole room again
                  jsr   AltezzaByte
                  sta   CopyLen
-                 ldy   #0
-:copia           lda   [zpPix],y
-                 sta   [zpBg],y
-                 iny
-                 iny
-                 cpy   CopyLen
-                 bcc   :copia
+                 jsr   CopiaPixBg
 
                  lda   #1                   ; what goes on top of it is put
                  sta   DaComporre           ; together separately
@@ -8743,7 +9339,15 @@ DecodeRoom       ldy   #4
 RifaiMaschera    lda   RoomH
                  bne   :c_e
                  rts
-:c_e             lda   MaskSrc
+:c_e             ldy   #$0A                 ; room picture, not the last object
+                 lda   [zpRaw],y
+                 clc
+                 adc   zpRaw
+                 sta   zpSrc
+                 lda   zpRaw+2
+                 adc   #0
+                 sta   zpSrc+2
+                 lda   MaskSrc
                  sta   SrcIdx
                  stz   DstX
                  stz   DstY
@@ -8776,14 +9380,7 @@ ComponiStanza    stz   DaComporre
                  bne   :c_eluce
                  jsr   AltezzaByte
                  sta   CopyLen
-                 ldy   #0
-                 lda   #$0000
-:lp              sta   [zpPix],y
-                 sta   [zpBg],y
-                 iny
-                 iny
-                 cpy   CopyLen
-                 bcc   :lp
+                 jsr   ZeroRoomBuf
                  bra   :attori
 :c_eluce         jsr   DrawObjects
 :attori          jsr   DrawActors
@@ -8825,7 +9422,58 @@ DecodeMaschera   lda   DstX                 ; the strip we start from
                  sta   MskOff
                  stz   MskY
 
-:riga            jsr   ProssimaMask
+* Repeat runs fill the rest of this strip in one go. MskData is loaded
+* every store: adding MaskPitch is 16-bit and would otherwise leave A
+* holding the offset, which is how the last burst painted noise.
+:riga            lda   MskY
+                 cmp   BlkH
+                 bcc   :work
+                 brl   :nexts
+:work            lda   MskRun
+                 bne   :have
+                 jsr   MskApri
+:have            lda   MskRep
+                 beq   :uno
+                 lda   BlkH
+                 sec
+                 sbc   MskY
+                 bne   :c_burst
+                 brl   :nexts
+:c_burst         cmp   MskRun
+                 bcc   :n
+                 lda   MskRun
+:n               sta   CelVis
+                 tax
+                 lda   MskRun
+                 sec
+                 sbc   CelVis
+                 sta   MskRun
+                 ldy   MskOff
+:burst           sep   #$20
+                 mx    %10
+                 lda   MskData
+                 sta   [zpMask],y
+                 rep   #$20
+                 mx    %00
+                 tya
+                 clc
+                 adc   MaskPitch
+                 tay
+                 dex
+                 bne   :burst
+                 sty   MskOff
+                 lda   MskY
+                 clc
+                 adc   CelVis
+                 sta   MskY
+                 brl   :riga
+
+:uno             ldy   SrcIdx
+                 lda   [zpSrc],y
+                 and   #$00FF
+                 inc   SrcIdx
+                 sta   MskData
+                 dec   MskRun
                  sep   #$20
                  mx    %10
                  ldy   MskOff
@@ -8838,29 +9486,25 @@ DecodeMaschera   lda   DstX                 ; the strip we start from
                  adc   MaskPitch
                  sta   MskOff
                  inc   MskY
-                 lda   MskY
-                 cmp   BlkH
-                 bcc   :riga
+                 brl   :riga
 
-                 inc   MskX
+:nexts           inc   MskX
                  lda   MskX
                  cmp   MskEnd
-                 bcc   :striscia
-                 rts
+                 bcs   :mskfine
+                 brl   :striscia
+:mskfine         rts
 
-*=======================================================================
-* ProssimaMask - the mask byte due now
-*=======================================================================
-ProssimaMask     lda   MskRun
-                 bne   :ancora
-                 ldy   SrcIdx
+* Open the next mask run without storing. Repeat runs keep one data byte;
+* literal runs read a fresh byte each time they are consumed.
+MskApri          ldy   SrcIdx
                  lda   [zpSrc],y
                  and   #$00FF
                  inc   SrcIdx
                  sta   TmpW
                  and   #$0080
                  beq   :diversi
-                 lda   TmpW                 ; bit 7: always the same byte
+                 lda   TmpW
                  and   #$007F
                  jsr   MskQuanti
                  sta   MskRun
@@ -8871,19 +9515,11 @@ ProssimaMask     lda   MskRun
                  and   #$00FF
                  inc   SrcIdx
                  sta   MskData
-                 bra   :ancora
-:diversi         lda   TmpW                 ; bytes, all different
+                 rts
+:diversi         lda   TmpW
                  jsr   MskQuanti
                  sta   MskRun
                  stz   MskRep
-:ancora          lda   MskRep
-                 bne   :pronto
-                 ldy   SrcIdx
-                 lda   [zpSrc],y
-                 and   #$00FF
-                 inc   SrcIdx
-                 sta   MskData
-:pronto          dec   MskRun
                  rts
 
 * A count of zero means two hundred and fifty-six, as in the original
@@ -8929,13 +9565,111 @@ MascheraCasella  pha
 * AltezzaByte - how many bytes the whole room takes
 *=======================================================================
 AltezzaByte      lda   RoomH
-                 sta   TmpW
-                 lda   #0
-:lp              clc
+                 beq   :zero
+                 dec   a
+                 asl   a
+                 tax
+                 lda   RowOff,x
+                 clc
                  adc   Pitch
-                 dec   TmpW
-                 bne   :lp
                  rts
+:zero            lda   #0
+                 rts
+
+*=======================================================================
+* ZeroRoomBuf - black zpPix and zpBg (dark room). Overlapping MVN
+*               when the block stays in one bank.
+*=======================================================================
+ZeroRoomBuf      lda   CopyLen
+                 beq   :fine
+                 cmp   #4
+                 bcc   :lento
+                 lda   zpPix
+                 tax
+                 clc
+                 adc   CopyLen
+                 bcs   :lento
+                 lda   zpBg
+                 clc
+                 adc   CopyLen
+                 bcs   :lento
+                 ldy   #0
+                 lda   #0
+                 sta   [zpPix],y
+                 sta   [zpBg],y
+                 lda   CopyLen
+                 sec
+                 sbc   #3
+                 sta   MvnC
+                 lda   zpPix
+                 tax
+                 clc
+                 adc   #2
+                 tay
+                 sep   #$20
+                 mx    %10
+                 lda   zpPix+2
+                 sta   :mv1+1
+                 sta   :mv1+2
+                 rep   #$30
+                 mx    %00
+                 lda   MvnC
+:mv1             mvn   $00,$00
+                 phk
+                 plb
+                 lda   zpBg
+                 tax
+                 clc
+                 adc   #2
+                 tay
+                 sep   #$20
+                 mx    %10
+                 lda   zpBg+2
+                 sta   :mv2+1
+                 sta   :mv2+2
+                 rep   #$30
+                 mx    %00
+                 lda   MvnC
+:mv2             mvn   $00,$00
+                 phk
+                 plb
+                 rts
+:lento           ldy   #0
+                 lda   #0
+:lp              sta   [zpPix],y
+                 sta   [zpBg],y
+                 iny
+                 iny
+                 cpy   CopyLen
+                 bcc   :lp
+:fine            rts
+
+*=======================================================================
+* CopiaPixBg - snapshot zpPix onto zpBg (MVN, word loop if it wraps)
+*=======================================================================
+CopiaPixBg       lda   CopyLen
+                 beq   :fine
+                 dec   a
+                 sta   MvnC
+                 stz   MvnS
+                 lda   zpPix
+                 sta   MvnPtrS
+                 lda   zpBg
+                 sta   MvnPtrD
+                 lda   zpPix+2
+                 sta   MvnSrcB
+                 lda   zpBg+2
+                 sta   MvnDstB
+                 jsr   MvnZp
+                 bcc   :fine
+                 ldy   #0
+:lp              lda   [zpPix],y
+                 sta   [zpBg],y
+                 iny
+                 iny
+                 cpy   CopyLen
+                 bcc   :lp
+:fine            rts
 
 *=======================================================================
 * ConfineImmagini - where a room's pictures stop and its descriptions
@@ -9062,6 +9796,8 @@ DecodeRLE        lda   zpRaw
                  lda   zpRaw+2
                  adc   #0
                  sta   zpSrc+2
+                 lda   zpSrc
+                 sta   SrcBase
                  stz   SrcIdx
 
                  stz   RunLen
@@ -9070,14 +9806,19 @@ DecodeRLE        lda   zpRaw
                  stz   Dither
                  stz   ColX
 
-                 ldx   #0                   ; the dithering table
-                 lda   #0                   ; starts clean
+                 lda   BlkH
+                 beq   :colonna
+                 ldx   #0
+                 sep   #$20
+                 mx    %10
+                 lda   #0
 :pulisci         sta   DitLo,x
                  sta   DitHi,x
                  inx
-                 inx
-                 cpx   #ROOMROWS
+                 cpx   BlkH
                  bcc   :pulisci
+                 rep   #$20
+                 mx    %00
 
 :colonna         lda   ColX
                  clc
@@ -9093,11 +9834,130 @@ DecodeRLE        lda   zpRaw
                  sta   PixOff
                  stz   Riga
 
-                 lda   ColX
+                 lda   ClipOn
+                 beq   :veloce
+                 brl   :pixel               ; object refresh: clip per pixel
+
+* Whole columns, one run at a time. The clip test is skipped; dither
+* tables still update so the next column is right.
+:veloce          lda   ColX
                  and   #1
                  sta   Dispari
+:run             lda   Riga
+                 cmp   BlkH
+                 bcc   :ancoracol
+                 brl   :finecol
+:ancoracol       lda   RunLen
+                 bne   :got
+                 jsr   NextRun
+:got             lda   BlkH
+                 sec
+                 sbc   Riga
+                 sta   RunNow
+                 lda   RunLen
+                 cmp   RunNow
+                 bcs   :cap
+                 sta   RunNow
+:cap             lda   RunLen
+                 sec
+                 sbc   RunNow
+                 sta   RunLen
+                 ldx   Riga
+                 ldy   PixOff
+                 lda   Dispari
+                 bne   :odd
+                 lda   Dither
+                 bne   :dithpari
+:solpari         sep   #$20
+                 mx    %10
+:solp            lda   ColLo
+                 sta   DitLo,x
+                 lda   ColHi
+                 sta   DitHi,x
+                 sta   [zpPix],y
+                 rep   #$20
+                 mx    %00
+                 tya
+                 clc
+                 adc   Pitch
+                 tay
+                 inx
+                 sep   #$20
+                 mx    %10
+                 dec   RunNow
+                 bne   :solp
+                 rep   #$20
+                 mx    %00
+                 bra   :runok
+:dithpari        sep   #$20
+                 mx    %10
+:dithp           lda   DitHi,x
+                 sta   [zpPix],y
+                 rep   #$20
+                 mx    %00
+                 tya
+                 clc
+                 adc   Pitch
+                 tay
+                 inx
+                 sep   #$20
+                 mx    %10
+                 dec   RunNow
+                 bne   :dithp
+                 rep   #$20
+                 mx    %00
+                 bra   :runok
+:odd             lda   Dither
+                 bne   :dithodd
+:solodd          sep   #$20
+                 mx    %10
+:solo            lda   ColLo
+                 sta   DitLo,x
+                 lda   ColHi
+                 sta   DitHi,x
+                 lda   ColLo
+                 ora   [zpPix],y
+                 sta   [zpPix],y
+                 rep   #$20
+                 mx    %00
+                 tya
+                 clc
+                 adc   Pitch
+                 tay
+                 inx
+                 sep   #$20
+                 mx    %10
+                 dec   RunNow
+                 bne   :solo
+                 rep   #$20
+                 mx    %00
+                 bra   :runok
+:dithodd         sep   #$20
+                 mx    %10
+:ditho           lda   DitLo,x
+                 ora   [zpPix],y
+                 sta   [zpPix],y
+                 rep   #$20
+                 mx    %00
+                 tya
+                 clc
+                 adc   Pitch
+                 tay
+                 inx
+                 sep   #$20
+                 mx    %10
+                 dec   RunNow
+                 bne   :ditho
+                 rep   #$20
+                 mx    %00
+:runok           stx   Riga
+                 sty   PixOff
+                 brl   :run
 
-:pixel           lda   RunLen
+:pixel           lda   ColX
+                 and   #1
+                 sta   Dispari
+:pixlp           lda   RunLen
                  bne   :dentro
                  jsr   NextRun
 :dentro          lda   Dither
@@ -9161,22 +10021,35 @@ DecodeRLE        lda   zpRaw
                  inc   Riga
                  lda   Riga
                  cmp   BlkH
-                 bcc   :pixel
+                 bcc   :pixlp
 
-                 inc   ColX
+:finecol         inc   ColX
                  lda   ColX
                  cmp   BlkW
                  bcs   :fine
                  brl   :colonna
-:fine            rts
+:fine            lda   zpSrc
+                 sec
+                 sbc   SrcBase
+                 sta   SrcIdx
+                 lda   SrcBase
+                 sta   zpSrc
+                 rts
 
 *=======================================================================
 * NextRun - the next group of identical pixels
 *=======================================================================
-NextRun          ldy   SrcIdx
-                 lda   [zpSrc],y
+NextRun          sep   #$20
+                 mx    %10
+                 lda   [zpSrc]
+                 inc   zpSrc
+                 bne   :oklo
+                 inc   zpSrc+1
+:oklo            sta   RunByte
+                 rep   #$20
+                 mx    %00
+                 lda   RunByte
                  and   #$00FF
-                 inc   SrcIdx
                  sta   RunByte
 
                  and   #$000F
@@ -9205,11 +10078,16 @@ NextRun          ldy   SrcIdx
                  stz   Dither
 :controlla       lda   RunLen
                  bne   :fine
-                 ldy   SrcIdx               ; zero: the real length follows
-                 lda   [zpSrc],y
-                 and   #$00FF
-                 sta   RunLen
-                 inc   SrcIdx
+                 sep   #$20
+                 mx    %10
+                 lda   [zpSrc]
+                 inc   zpSrc
+                 bne   :ok2
+                 inc   zpSrc+1
+:ok2             sta   RunLen
+                 stz   RunLen+1
+                 rep   #$20
+                 mx    %00
 :fine            rts
 
 *=======================================================================
@@ -9223,16 +10101,66 @@ NextRun          ldy   SrcIdx
 * one by one we keep a table: for each of the sixteen possible font
 * nibbles, the word ready to be written to the screen.
 *=======================================================================
-* SetTextColor - A = colour, prepares the table
-*=======================================================================
+* SetTextColor - A = colour. Tables for all sixteen colours are built
+* once; afterwards this is a 32-byte copy, or nothing if the colour
+* did not change.
 SetTextColor     and   #$000F
+                 cmp   TxtCol
+                 bne   :cambia
+                 rts
+:cambia          sta   TxtCol
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a                    ; *32
+                 tax
+                 ldy   #0
+:cp              lda   EspPal,x
+                 sta   EspTab,y
+                 inx
+                 inx
+                 iny
+                 iny
+                 cpy   #32
+                 bcc   :cp
+                 rts
+
+InitEspPal       stz   TxtCol
+:col             jsr   BuildEsp
+                 lda   TxtCol
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 tax
+                 ldy   #0
+:cp              lda   EspTab,y
+                 sta   EspPal,x
+                 inx
+                 inx
+                 iny
+                 iny
+                 cpy   #32
+                 bcc   :cp
+                 inc   TxtCol
+                 lda   TxtCol
+                 cmp   #16
+                 bcc   :col
+                 lda   #$FFFF
+                 sta   TxtCol
+                 rts
+
+BuildEsp         lda   TxtCol
+                 and   #$000F
                  sta   TxtCol
                  stz   NibIdx
                  ldx   #0
 :nib             stz   Byte0
                  stz   Byte1
                  txa
-                 and   #$0008               ; first pixel
+                 and   #$0008
                  beq   :p1
                  lda   TxtCol
                  asl   a
@@ -9241,13 +10169,13 @@ SetTextColor     and   #$000F
                  asl   a
                  sta   Byte0
 :p1              txa
-                 and   #$0004               ; second
+                 and   #$0004
                  beq   :p2
                  lda   Byte0
                  ora   TxtCol
                  sta   Byte0
 :p2              txa
-                 and   #$0002               ; third
+                 and   #$0002
                  beq   :p3
                  lda   TxtCol
                  asl   a
@@ -9256,13 +10184,13 @@ SetTextColor     and   #$000F
                  asl   a
                  sta   Byte1
 :p3              txa
-                 and   #$0001               ; fourth
+                 and   #$0001
                  beq   :salva
                  lda   Byte1
                  ora   TxtCol
                  sta   Byte1
 :salva           lda   Byte1
-                 xba                        ; the second byte goes high
+                 xba
                  ora   Byte0
                  phx
                  ldx   NibIdx
@@ -9287,23 +10215,26 @@ DrawChar         and   #$007F
                  asl   a                    ; eight bytes per character
                  sta   FontIdx
 
-                 lda   TxtY                 ; row * 160
+                 lda   TxtY
+                 cmp   TxtYCache
+                 beq   :rowok
+                 sta   TxtYCache
                  asl   a
                  asl   a
                  asl   a
                  asl   a
                  asl   a
-                 sta   TmpW                 ; row * 32
+                 sta   TmpW
                  asl   a
-                 asl   a                    ; row * 128
+                 asl   a
                  clc
                  adc   TmpW
-                 sta   TxtOff
-                 lda   TxtX                 ; plus four bytes per column
+                 sta   TxtRowBase
+:rowok           lda   TxtX
                  asl   a
                  asl   a
                  clc
-                 adc   TxtOff
+                 adc   TxtRowBase
                  sta   TxtOff
 
                  stz   Conta8
@@ -9939,6 +10870,8 @@ MsgCred1         asc   'Porting to IIGS: Michele Di Paola'
                  dfb   0
 MsgCred2         asc   'aka TheDIPO! / JeDiCrack'
                  dfb   0
+MsgLoad          asc   'Loading...'
+                 dfb   0
 
 * The table of the 256 opcodes, generated from the same list verified in
 * Python against all 1093 code blocks in the game.
@@ -10565,6 +11498,11 @@ ClipX1           ds    2
 ClipX2           ds    2
 ClipY1           ds    2
 ClipY2           ds    2
+RunNow           ds    2      ; pixels left in a fast RLE/cel run
+CelLit           ds    2      ; bit 3 of lights: 0 = grey costumes
+SlamDP           ds    2
+SlamStack        ds    2
+SlamPage         ds    2
 SpecialeOra      ds    2      ; a special doSentence verb
 NestSlot         ds    2      ; the slot to run here and now
 NestLiv          ds    2      ; how deep the nesting has gone
@@ -10638,6 +11576,12 @@ MvnD             ds    2
 MvnC             ds    2
 MvnX             ds    2
 MvnRip           ds    2
+MvnSrcB          ds    2
+MvnDstB          ds    2
+MvnPtrS          ds    2
+MvnPtrD          ds    2
+SrcBase          ds    2
+AnimSeen         ds    64
 MvnN             ds    2
 MvnI             ds    2
 
@@ -10729,6 +11673,14 @@ WalkAY           ds    2
 WalkSX           ds    2
 WalkSY           ds    2
 ActDirty         ds    2
+ActTutti         ds    2
+ActSporco        ds    {25}*2
+ActScan          ds    2
+TmpAct           ds    2
+EspandiN         ds    2
+FillCol          ds    2
+CelMbit          ds    2
+CelMcol          ds    2
 SprX1            ds    2
 SprY1            ds    2
 SprX2            ds    2
@@ -10807,6 +11759,7 @@ Riga8            ds    2
 Conta8           ds    2
 TxtOff           ds    2
 EspTab           ds    32
+EspPal           ds    16*32
 
 VerbId           ds    {16}*2
 VerbX            ds    {16}*2
@@ -10820,6 +11773,9 @@ VerbXT           ds    2
 VerbYT           ds    2
 VerbCmd          ds    2
 VerbHover        ds    2                    ; the verb under the pointer, plus one
+VerbHoverLast    ds    2
+SentHotLast      ds    2
+InvHotLast       ds    2
 PtoX             ds    2                    ; the point to look for a verb at
 PtoY             ds    2
 PuntoMou         ds    4                    ; where the IIGS writes the pointer
@@ -10973,6 +11929,9 @@ InvDirty         ds    2
 MaskPitch        ds    2
 MascAtt          ds    2                    ; the mask of the box he stands on
 CelRy            ds    2                    ; the pixel's row inside the room
+CelVis           ds    2
+TxtYCache        ds    2
+TxtRowBase       ds    2
 MskX             ds    2
 MskEnd           ds    2
 MskY             ds    2
