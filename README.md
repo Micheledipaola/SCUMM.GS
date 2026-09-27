@@ -27,8 +27,9 @@ the music tracks in the same files are skipped.
 ESC skips a cutscene when the script allowed it, Q asks before quitting, Space
 pauses, Apple-8 asks before restarting.
 
-A few opcodes the game has not needed yet are still stubs. Zak McKracken uses the
-same V2 files but has not been tested yet; later SCUMM games are a different engine.
+A few opcodes the game has not needed yet are still stubs. Zak McKracken (v2 enhanced!) 
+uses the same V2 files but has not been tested extensively yet; Zak anyway runs
+and shows the game; later SCUMM games (ie Monkey Island) are a different engine (v5).
 
 ## Building
 
