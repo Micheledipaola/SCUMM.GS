@@ -31,7 +31,7 @@ A few opcodes Maniac Mansion has not needed yet are still stubs.
 
 Zak McKracken release for DOS -v2 aka enhanced- uses the same V2 files and is being
 tested extensively - anyway the game loads and runs; later SCUMM games 
-(ie: Monkey Island) are a different engine (v5).
+(ie: Monkey Island) are a different engine (v5) and will most likely not even load.
 
 ## Building
 
