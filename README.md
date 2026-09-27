@@ -1,2 +1,2 @@
 # SCUMM.GS
-SCUMM interpreter for Apple IIGS 
+SCUMMv2 interpreter for Apple IIGS 
