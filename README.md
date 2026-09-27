@@ -1,4 +1,4 @@
-# SCUMM for the Apple IIGS
+# SCUMMv2 for the Apple IIGS
 
 A SCUMM V2 interpreter written in 65816 assembly, running on a stock Apple IIGS.
 It reads the original game files — *Maniac Mansion*, *Zak McKracken* — and plays them:
