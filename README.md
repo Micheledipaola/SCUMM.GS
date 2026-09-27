@@ -12,8 +12,8 @@ and debug it.
 
 ## Status
 
-Playable. Maniac Mansion runs from the title screen into the mansion: rooms, walking
-with pathfinding, actors with their costume animations, objects and their states,
+Maniac Mansion release for DOS runs from the title screen into the mansion: rooms, 
+walking with pathfinding, actors with their costume animations, objects and their states,
 the verb panel and the inventory, the sentence line, dialogue with the mouth moving,
 scrolling rooms with the camera following, dark rooms with the flashlight, Amiga
 sound effects (no music), and saving and loading through the game's own save screen.
@@ -27,10 +27,11 @@ the music tracks in the same files are skipped.
 ESC skips a cutscene when the script allowed it, Q asks before quitting, Space
 pauses, Apple-8 asks before restarting.
 
-A few opcodes Maniac Mansion has not needed yet are still stubs. Zak McKracken 
-(be sure to use DOSv2 aka enhanced!) uses the same V2 files but has not been 
-tested extensively - anyway it runs and shows the game; later SCUMM games 
-(ie Monkey Island) are a different engine (v5).
+A few opcodes Maniac Mansion has not needed yet are still stubs. 
+
+Zak McKracken release for DOS -v2 aka enhanced- uses the same V2 files and is being
+tested extensively - anyway the game loads and runs; later SCUMM games 
+(ie: Monkey Island) are a different engine (v5).
 
 ## Building
 
