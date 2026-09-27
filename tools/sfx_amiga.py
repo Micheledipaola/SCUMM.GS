@@ -282,7 +282,8 @@ def pack_folder(folder, dest):
         if i == 57:
             period = min(period * 2, 0x2000)  # longer meteor impact
         if i == 56:
-            period = min(period * 4, 0x2000)  # whoosh lasts ~1 s, not a chirp
+            period = min(period * 10, 0x2000)  # one slow whoosh, not a siren
+            flags = 0
         if i == 28:
             vol = 8  # foyer clock, much quieter
         if i == 12:

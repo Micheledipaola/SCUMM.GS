@@ -140,8 +140,7 @@ SFXPLAY          =     $8000          ; one 32K DOC bank at a time
 SFXALLOC         =     $8100          ; 32K plus a page for alignment
 SFXGEN           =     $0101          ; ch 0, generator 1, free-form (TN #37)
 SFXSTOP          =     $0002          ; bitmask: generator 1
-MUSSTOP          =     $0002          ; same generator as the SFX (gen 1)
-MUSVOL           =     160
+MUSVOL           =     140            ; DOC volume (0-255); 200 clipped 4 voices
 MUSIDX           =     256
 MUSSEQ           =     16384
 
@@ -225,6 +224,7 @@ zpNome           =     $24            ; the description whose name we want
 zpSfx            =     $28            ; packed Amiga samples (SFX file)
 zpMusI           =     $2C            ; GMUS index (MUSI)
 zpMus            =     $30            ; current track events (MUSQ)
+zpDoc            =     $34            ; long pointer while copying into DOC RAM
 
 *=======================================================================
 Start            phk
@@ -285,6 +285,7 @@ Start            phk
                  lda   DPAddr
                  clc
                  adc   #$0500
+                 sta   GameDP
                  tcd
 
 *----- the three memory blocks -----------------------------------------
@@ -558,6 +559,9 @@ MainLoop         jsr   Orologio
                  lda   TastoQ
                  cmp   #'8'
                  beq   :riparti
+                 jsr   TastoAudio
+                 bcc   :no8
+                 brl   :vivi
 :no8             lda   TastoQ
 * service keys: to wander between rooms while the game cannot take us
 * there by itself yet
@@ -807,9 +811,10 @@ RiavviaGioco     jsr   StopMus
 * TastoGioco - the keys the game expects. A = the character.
 *=======================================================================
 * The DOS version uses the function keys: F1, F2 and F3 to switch
-* between kids, F5 for the disk, F8 to restart. The IIGS has no such
-* keys, so they come in through the Apple key: Apple-1, 2, 3, 5. Apple-8
-* is caught in the main loop, not here: restart is not a game key.
+* between kids, F5 for the disk, F6 music on/off, F8 to restart. The
+* IIGS has no such keys, so they come in through the Apple key:
+* Apple-1, 2, 3, 5. Apple-6/7/9 and Apple--/= are audio (main loop).
+* Apple-8 is caught in the main loop, not here: restart is not a game key.
 * Return is 13, which in V2 means "run the sentence that is written
 * there": it is the game's own way of confirming without clicking the
 * object twice.
@@ -838,6 +843,64 @@ TastoGioco       sta   TastoQ
                  lda   #SCR_VERB
                  jsr   StartScript
 :niente          rts
+
+* Apple-6 = F6 music on/off. Apple-7/9 music volume. Apple--/= SFX volume.
+* Carry set if the key was ours (do not send it to the scripts).
+TastoAudio       lda   EvtModifiers
+                 and   #$0100
+                 beq   :no
+                 lda   TastoQ
+                 cmp   #'6'
+                 beq   :tog
+                 cmp   #'7'
+                 beq   :mdn
+                 cmp   #'9'
+                 beq   :mup
+                 cmp   #'-'
+                 beq   :sdn
+                 cmp   #'='
+                 beq   :sup
+:no              clc
+                 rts
+:tog             lda   EvtWhat
+                 cmp   #3
+                 bne   :ok
+                 lda   MusMute
+                 eor   #1
+                 sta   MusMute
+                 jsr   MusApplyVol
+:ok              sec
+                 rts
+:mdn             lda   MusLvl
+                 beq   :ok
+                 dec   a
+                 sta   MusLvl
+                 stz   MusMute
+                 jsr   MusApplyVol
+                 sec
+                 rts
+:mup             lda   MusLvl
+                 cmp   #8
+                 bcs   :ok
+                 inc   a
+                 sta   MusLvl
+                 stz   MusMute
+                 jsr   MusApplyVol
+                 sec
+                 rts
+:sdn             lda   SfxLvl
+                 beq   :ok
+                 dec   a
+                 sta   SfxLvl
+                 sec
+                 rts
+:sup             lda   SfxLvl
+                 cmp   #8
+                 bcs   :ok
+                 inc   a
+                 sta   SfxLvl
+                 sec
+                 rts
 
 *=======================================================================
 * DoClick - the player pressed: set up what the game expects to find
@@ -1298,8 +1361,9 @@ TryOpen          jsl   $E100A8
                  rts
 
 *=======================================================================
-* Sound: Amiga samples via the Sound Manager free-form synth.
-* Music is NES sequences on the Amiga-58 wavetables (gens 2-5).
+* Sound: Amiga samples via the Sound Manager free-form synth (gen 1).
+* Music: Amiga 50/58 scores on DOC oscillators 28-31, waves at $8000.
+* Apple-6 toggles music (F6); Apple-7/9 music volume; Apple--/= SFX volume.
 *=======================================================================
 AvviaSuono       stz   SndOn
                  stz   SfxOn
@@ -1308,6 +1372,13 @@ AvviaSuono       stz   SndOn
                  stz   MusReady
                  stz   MusId
                  stz   MusPend
+                 stz   MusMute
+                 stz   CometHold
+                 stz   MusLoadDuck
+                 lda   #7
+                 sta   MusLvl
+                 lda   #8
+                 sta   SfxLvl
                  lda   #$FFFF
                  sta   MusEgoLast
                  stz   SndWaitT
@@ -1507,7 +1578,7 @@ SuonoTick        lda   SndWaitT
                  lda   SndLoop
                  bne   :sfxdone
                  pha
-                 PushWord #1                ; generator number, not the mode word
+                 PushWord #1
                  _FFSoundDoneStatus
                  pla
                  beq   :sfxdone
@@ -1539,12 +1610,12 @@ PlaySfx          sta   SndWant
 :s3              cmp   #MAXSND
                  bcc   :s4
                  rts
-:s4              cmp   #56                  ; comet: the script fires this
-                 bne   :chkd                ; long before the meteor reaches the hill
+:s4              cmp   #56                  ; one slow swoosh near the impact
+                 bne   :chkd
                  lda   SndWaitId
                  cmp   #56
                  beq   :giaatt
-                 lda   #400
+                 lda   #500                 ; meteor is on screen by then
                  sta   SndWaitT
                  lda   #56
                  sta   SndWaitId
@@ -1560,6 +1631,10 @@ PlaySfx          sta   SndWant
                  rts
 :subito          stz   SndWaitT
                  stz   SndWaitId
+                 lda   SndWant
+                 cmp   #57
+                 bne   PlayOra
+                 stz   CometHold            ; impact: stop filling with 56
 PlayOra          jsr   StopSfx
                  lda   SndWant
                  asl   a
@@ -1580,7 +1655,11 @@ PlayOra          jsr   StopSfx
                  xba
                  and   #$00FF
                  sta   SndLoop
-                 iny
+                 lda   SndWant
+                 cmp   #56
+                 bne   :keep
+                 stz   SndLoop              ; one cycle, not an alarm
+:keep            iny
                  iny
                  lda   [zpSfx],y            ; vol / bank
                  and   #$00FF
@@ -1625,10 +1704,10 @@ PlayOra          jsr   StopSfx
 :due             lda   #2
                  bra   :corto
 :lunghi          lda   SndWant
-                 cmp   #57                  ; impact / comet whoosh: the body is at the end
+                 cmp   #57                  ; impact: the body is at the end
                  beq   :coda
                  cmp   #56
-                 beq   :coda
+                 beq   :coda                ; swoosh: tail of the sample, once
                  lda   FFPages
                  and   #$00FF
                  cmp   #9
@@ -1659,6 +1738,8 @@ PlayOra          jsr   StopSfx
                  lda   #$2000
                  sta   FFDoc
                  lda   SndVol
+                 ldx   SfxLvl
+                 jsr   ScaleVol
                  sta   FFVol
                  stz   FFNext
                  stz   FFNext+2
@@ -1765,13 +1846,16 @@ hIsSound         jsr   FetchB
                  rts
 
 *=======================================================================
-* Music - NES scores, Amiga 58 waves, generator 1 (the SFX one, which
-* the Sound Manager actually starts). Polyphony waits; freeze first.
+* Music - Amiga V2 scores, 4 DOC voices (osc 28-31), wavetables in
+* DOC RAM at $8000. SFX stay on Sound Manager generator 1 / $2000.
+* Do not write $E1: that register belongs to the Sound Manager; touching
+* it (or filling DOC RAM from $0000) silences both music and SFX.
 * Index MUSI, samples MUS0, one track from MUSQ. music/map.txt chooses
 * which id is intro / house / each ego.
 *=======================================================================
 LoadMus          stz   MusReady
                  stz   MusOn
+                 rts                   ; no score: Amiga samples and DOS PCjr both sounded wrong
                  lda   #PathMusI
                  sta   OpenPath
                  lda   #^PathMusI
@@ -1829,6 +1913,7 @@ LoadMus          stz   MusReady
                  sta   ReadCount
                  stz   ReadCount+2
                  jsr   ReadAndClose
+                 jsr   DocCopyWaves
                  PushLong #MUSSEQ
                  PushWord #$C000
                  jsr   GetBlock
@@ -2010,6 +2095,8 @@ PlayMus          lda   MusReady
                  sta   MusPtr+6
                  ldx   #0
 :z               stz   MusEnd,x
+                 lda   #$FFFF
+                 sta   MusLastPg,x
                  inx
                  inx
                  cpx   #8
@@ -2032,10 +2119,7 @@ PlayMus          lda   MusReady
 StopMus          stz   MusPend
                  lda   MusOn
                  beq   :off
-                 lda   SndOn
-                 beq   :off
-                 PushWord #MUSSTOP
-                 _FFStopSound
+                 jsr   DocHaltAll
 :off             stz   MusOn
                  stz   MusId
                  rts
@@ -2072,24 +2156,28 @@ MusWatchEgo      lda   MusReady
 MusTick          lda   MusOn
                  bne   :on
                  rts
-:on                               lda   MusClock
-                 clc
-                 adc   Elapsed
+:on              lda   Elapsed
+                 beq   :rts                 ; busy-loop: do not eat the score
+                 cmp   #4
+                 bcc   :add
+                 lda   #3                   ; hitch: lag a little, never fast-forward
+:add             clc
+                 adc   MusClock
                  sta   MusClock
-                 ldx   #6                   ; lead last, so it wins the one generator
+                 ldx   #0
 :ch              jsr   MusChan
-                 dex
-                 dex
-                 bpl   :ch
+                 inx
+                 inx
+                 cpx   #8
+                 bcc   :ch
                  jsr   MusMaybeEnd
-                 rts
+:rts             rts
 
-* X = channel * 2. Fire due events, stop the voice when its duration ends.
-* The Sound Manager kills X (and Y); every toolbox call here saves them.
+* X = channel * 2. Fire every due event; halt the oscillator when done.
 MusChan          phx
                  lda   MusN,x
                  beq   :hold
-                 lda   #3                   ; at most a handful of notes a tick
+                 lda   #24
                  sta   MusBurst
 :more            lda   MusBurst
                  beq   :hold
@@ -2124,21 +2212,28 @@ MusChan          phx
 
 MusNote          phx
                  phy
-                 lda   [zpMus],y            ; tick, skip
+                 lda   [zpMus],y            ; tick
+                 sta   MusEvTick
                  iny
                  iny
-                 lda   [zpMus],y            ; freq
-                 sta   FFFreq
+                 lda   [zpMus],y            ; DOC frequency
+                 sta   MusFreq
                  iny
                  iny
                  lda   [zpMus],y            ; dur
                  clc
-                 adc   MusClock
+                 adc   MusEvTick            ; absolute end, not MusClock+dur
                  sta   MusEnd,x
                  iny
                  iny
                  lda   [zpMus],y            ; inst
                  and   #$00FF
+                 sta   MusSlot
+                 iny
+                 lda   [zpMus],y            ; flags: bit0 = oneshot
+                 and   #$0001
+                 sta   MusOneShot
+                 lda   MusSlot
                  asl   a
                  clc
                  adc   #32
@@ -2150,41 +2245,18 @@ MusNote          phx
                  xba
                  and   #$00FF
                  beq   :ply
-                 lda   #8                   ; always 2K, like PlaySfx
-                 sta   FFPages
-                 lda   MusPage
-                 xba
-                 clc
-                 adc   MusPlayLo
-                 sta   FFWave
-                 lda   MusPlayHi
-                 adc   #0
-                 sta   FFWave+2
-                 lda   #$0800
-                 sta   FFBuf
-                 lda   MusDocT,x
-                 sta   FFDoc
-                 lda   #MUSVOL
-                 sta   FFVol
-                 stz   FFNext
-                 stz   FFNext+2
-                 jsr   MusQuiet
-                 lda   MusGenT,x
-                 pha
-                 PushPtr FFSynth
-                 _FFStartSound
+                 lda   MusEnd,x
+                 cmp   MusClock
+                 beq   :ply
+                 bcc   :ply
+                 jsr   DocSize
+                 sta   MusWSize
+                 jsr   DocNote
 :ply             ply
                  plx
                  rts
 
-MusQuiet         phx
-                 lda   SndOn
-                 beq   :no
-                 lda   MusBitT,x
-                 pha
-                 _FFStopSound
-:no              plx
-                 rts
+MusQuiet         jmp   DocHalt
 
 MusMaybeEnd      ldx   #0
 :lp              lda   MusN,x
@@ -2222,9 +2294,291 @@ MusMaybeEnd      ldx   #0
 :die             jsr   StopMus
 :busy            rts
 
-MusGenT          dw    $0101,$0101,$0101,$0101
-MusDocT          dw    $2000,$2000,$2000,$2000
-MusBitT          dw    $0002,$0002,$0002,$0002
+* Osc 28-31: last four, above the Sound Manager's generators.
+MusOscT          dw    28,29,30,31
+MusCtlT          dw    $0000,$0010,$0000,$0010
+
+* A = wavetable pages (1,2,4,8) -> DOC $C0 size field, RES=0.
+DocSize          phx
+                 ldx   #0
+:lp              cmp   #2
+                 bcc   :ok
+                 lsr   a
+                 inx
+                 bra   :lp
+:ok              txa
+                 asl   a
+                 asl   a
+                 asl   a
+                 plx
+                 rts
+
+DocHaltAll       ldx   #0
+:lp              jsr   DocHalt
+                 inx
+                 inx
+                 cpx   #8
+                 bcc   :lp
+                 rts
+
+DocHalt          phx
+                 lda   #$FFFF
+                 sta   MusLastPg,x
+                 lda   SndOn
+                 beq   :no
+                 lda   MusOscT,x
+                 clc
+                 adc   #$00A0
+                 tay
+                 lda   MusCtlT,x
+                 ora   #$0001
+                 tyx
+                 jsr   DocWr
+:no              plx
+                 rts
+
+* X = channel*2. Retrigger without halt unless the wavetable changed.
+DocNote          lda   SndOn
+                 bne   :go
+                 rts
+:go              phx
+                 php
+                 sei
+                 stx   MusCh
+                 lda   MusLastPg,x
+                 cmp   MusPage
+                 beq   :same
+                 jsr   DocHalt
+                 ldx   MusCh
+                 lda   MusPage
+                 sta   MusLastPg,x
+:same            lda   MusOscT,x
+                 sta   MusOsc
+                 tax
+                 lda   MusFreq
+                 and   #$00FF
+                 jsr   DocWr
+                 lda   MusOsc
+                 clc
+                 adc   #$0020
+                 tax
+                 lda   MusFreq
+                 xba
+                 and   #$00FF
+                 jsr   DocWr
+                 lda   MusOsc
+                 clc
+                 adc   #$0040
+                 pha
+                 jsr   MusDocVol
+                 plx
+                 jsr   DocWr
+                 lda   MusOsc
+                 clc
+                 adc   #$0080
+                 tax
+                 lda   MusPage
+                 clc
+                 adc   #$0080
+                 and   #$00FF
+                 jsr   DocWr
+                 lda   MusOsc
+                 clc
+                 adc   #$00C0
+                 tax
+                 lda   MusWSize
+                 jsr   DocWr
+                 ldx   MusCh
+                 lda   MusCtlT,x
+                 ldx   MusOneShot
+                 beq   :free
+                 ora   #$0002               ; oneshot, then auto-halt
+:free            pha
+                 lda   MusOsc
+                 clc
+                 adc   #$00A0
+                 tax
+                 pla
+                 jsr   DocWr
+                 plp
+                 plx
+                 rts
+
+* A = byte, X = DOC register (0-255). I/O in bank $E1.
+DocWr            php
+                 sei
+                 sep   #$20
+                 mx    %10
+                 pha
+:w               lda   >$E1C03C
+                 bmi   :w
+                 lda   #$0F
+                 sta   >$E1C03C
+:w2              lda   >$E1C03C
+                 bmi   :w2
+                 txa
+                 sta   >$E1C03E
+:w3              lda   >$E1C03C
+                 bmi   :w3
+                 pla
+                 sta   >$E1C03D
+                 plp
+                 mx    %00
+                 rts
+
+* Pages actually used in MUS0 (max of page+pages in the 8 slots).
+DocWaveLen       ldy   #32
+                 stz   MusTmp
+                 lda   #8
+                 sta   MusCh
+:lp              lda   [zpMusI],y
+                 pha
+                 and   #$00FF
+                 sta   MusPage
+                 pla
+                 xba
+                 and   #$00FF
+                 clc
+                 adc   MusPage
+                 cmp   MusTmp
+                 bcc   :n
+                 sta   MusTmp
+:n               iny
+                 iny
+                 dec   MusCh
+                 bne   :lp
+                 lda   MusTmp
+                 rts
+
+* Copy MUS0 into DOC RAM $8000. 16-bit store to $C03E so the high
+* address actually lands in $C03F; a 32K fill from $0000 had wiped
+* the Sound Manager's wavetable at $2000 (SFX and music both gone).
+DocCopyWaves     lda   SndOn
+                 bne   :len
+                 rts
+:len             jsr   DocWaveLen
+                 beq   :no
+                 sta   MusTmp
+                 lda   MusPlayLo
+                 sta   zpDoc
+                 lda   MusPlayHi
+                 sta   zpDoc+2
+                 php
+                 sei
+                 sep   #$20
+                 mx    %10
+:w               lda   >$E1C03C
+                 bmi   :w
+                 lda   #$4F                 ; RAM, no autoinc, vol 15
+                 sta   >$E1C03C
+:w2              lda   >$E1C03C
+                 bmi   :w2
+                 rep   #$20
+                 mx    %00
+                 lda   #$8000
+                 sta   >$E1C03E
+                 sep   #$30
+                 mx    %11
+:w3              lda   >$E1C03C
+                 bmi   :w3
+                 lda   #$6F                 ; RAM + autoinc
+                 sta   >$E1C03C
+                 ldx   MusTmp               ; pages (lo)
+                 ldy   #$00
+:lp              lda   >$E1C03C
+                 bmi   :lp
+                 lda   [zpDoc],y
+                 sta   >$E1C03D
+                 iny
+                 bne   :lp
+                 inc   zpDoc+1
+                 dex
+                 bne   :lp
+:w4              lda   >$E1C03C
+                 bmi   :w4
+                 lda   #$0F                 ; DOC registers, vol 15
+                 sta   >$E1C03C
+                 plp
+                 mx    %00
+:no              rts
+
+* A = 0-255, X = 0-8  ->  A * X / 8
+ScaleVol         and   #$00FF
+                 cpx   #0
+                 beq   :z
+                 cpx   #8
+                 beq   :ok
+                 sta   VolTmp
+                 lda   #0
+:lp              clc
+                 adc   VolTmp
+                 dex
+                 bne   :lp
+                 lsr   a
+                 lsr   a
+                 lsr   a
+:ok              rts
+:z               lda   #0
+                 rts
+
+MusDocVol        lda   MusMute
+                 ora   MusLoadDuck
+                 bne   :z
+                 lda   #MUSVOL
+                 ldx   MusLvl
+                 jmp   ScaleVol
+:z               lda   #0
+                 rts
+
+MusApplyVol      lda   MusOn
+                 beq   :no
+                 ldx   #0
+:lp              phx
+                 lda   MusOscT,x
+                 clc
+                 adc   #$0040
+                 pha
+                 jsr   MusDocVol
+                 plx
+                 jsr   DocWr
+                 plx
+                 inx
+                 inx
+                 cpx   #8
+                 bcc   :lp
+:no              rts
+
+MusDuck          lda   #1
+                 sta   MusLoadDuck
+                 jmp   MusApplyVol          ; mute; do not halt (score stays in time)
+
+MusUnduck        lda   MusLoadDuck
+                 bne   :go
+                 rts
+:go              lda   MusOn
+                 beq   :vol
+                 PushLong #0
+                 _GetTick
+                 PullLong Tick
+                 lda   Tick
+                 sec
+                 sbc   LastTick
+                 beq   :vol
+                 cmp   #120
+                 bcc   :n
+                 lda   #120
+:n               sta   MusCatch
+:lp              lda   MusCatch
+                 beq   :caught
+                 dec   MusCatch
+                 lda   #1
+                 sta   Elapsed
+                 jsr   MusTick
+                 bra   :lp
+:caught          lda   Tick
+                 sta   LastTick
+:vol             stz   MusLoadDuck
+                 jmp   MusApplyVol
 
 *=======================================================================
 * ReadAndClose - read ReadCount bytes into ReadBuf and close
@@ -2681,26 +3035,105 @@ MostraUno        lda   RoomH
 *=======================================================================
 * DrawActors - the characters that are in this room
 *=======================================================================
+* V2 paints back to front by feet Y. Drawing in actor-number order left
+* Sandy stuck on top of Dr Fred in the intro: he walked "behind" her.
 DrawActors       lda   RoomH
                  bne   :c_e
                  rts
-:c_e             stz   ActIdx
-:lp              ldx   ActIdx
-                 lda   ActCost,x
-                 beq   :prossimo
+:c_e             stz   DrawSoloSporco
+                 jsr   RiempiOrdine
+                 jsr   OrdinaPerY
+                 jmp   DisegnaOrdine
+
+DrawAttoriSporchi lda  RoomH
+                 bne   :c_e
+                 rts
+:c_e             lda   #1
+                 sta   DrawSoloSporco
+                 jsr   RiempiOrdine
+                 jsr   OrdinaPerY
+                 jmp   DisegnaOrdine
+
+RiempiOrdine     stz   ActNOrd
+                 ldx   #0
+:lp              lda   ActCost,x
+                 beq   :n
                  lda   ActRoom,x
                  cmp   CurRoom
-                 bne   :prossimo
-                 lda   ActVis,x             ; anyone not assembled is not
-                 beq   :prossimo            ; draw
-                 jsr   DrawActor
-:prossimo        lda   ActIdx
-                 clc
-                 adc   #2
-                 sta   ActIdx
-                 cmp   #NACT*2
+                 bne   :n
+                 lda   ActVis,x
+                 beq   :n
+                 lda   DrawSoloSporco
+                 beq   :add
+                 lda   ActSporco,x
+                 beq   :n
+:add             ldy   ActNOrd
+                 txa
+                 sta   ActOrd,y
+                 iny
+                 iny
+                 sty   ActNOrd
+:n               inx
+                 inx
+                 cpx   #NACT*2
                  bcc   :lp
                  rts
+
+* Insertion sort: smaller ActY first (further away), then actor number.
+OrdinaPerY       lda   ActNOrd
+                 cmp   #4
+                 bcc   :fine
+                 lda   #2
+                 sta   OrdI
+:outer           ldx   OrdI
+                 lda   ActOrd,x
+                 sta   OrdAct
+                 tax
+                 lda   ActY,x
+                 sta   OrdY
+                 lda   OrdI
+                 sta   OrdJ
+:inner           lda   OrdJ
+                 beq   :place
+                 tax
+                 sec
+                 sbc   #2
+                 tay
+                 lda   ActOrd,y
+                 sta   OrdTmp
+                 tax
+                 lda   ActY,x
+                 cmp   OrdY
+                 beq   :place
+                 bcc   :place
+                 lda   OrdTmp
+                 ldx   OrdJ
+                 sta   ActOrd,x
+                 sty   OrdJ
+                 bra   :inner
+:place           lda   OrdAct
+                 ldx   OrdJ
+                 sta   ActOrd,x
+                 lda   OrdI
+                 clc
+                 adc   #2
+                 sta   OrdI
+                 cmp   ActNOrd
+                 bcc   :outer
+:fine            rts
+
+DisegnaOrdine    ldx   #0
+:lp              cpx   ActNOrd
+                 bcs   :fine
+                 lda   ActOrd,x
+                 sta   ActIdx
+                 phx
+                 jsr   DrawActor
+                 plx
+                 inx
+                 inx
+                 bra   :lp
+:fine            rts
 
 *=======================================================================
 * DrawActor - one character, limb by limb
@@ -5314,29 +5747,6 @@ IntersecaAgg     lda   DstX
                  clc
                  rts
 :no              sec
-                 rts
-
-DrawAttoriSporchi lda  RoomH
-                 bne   :c_e
-                 rts
-:c_e             stz   ActIdx
-:lp              ldx   ActIdx
-                 lda   ActSporco,x
-                 beq   :prossimo
-                 lda   ActCost,x
-                 beq   :prossimo
-                 lda   ActRoom,x
-                 cmp   CurRoom
-                 bne   :prossimo
-                 lda   ActVis,x
-                 beq   :prossimo
-                 jsr   DrawActor
-:prossimo        lda   ActIdx
-                 clc
-                 adc   #2
-                 sta   ActIdx
-                 cmp   #NACT*2
-                 bcc   :lp
                  rts
 
 *=======================================================================
@@ -10386,7 +10796,8 @@ GuardaVerbo      PushPtr PuntoMou
 * frame of the previous one stays on screen the whole time, and it reads
 * as a freeze. "Loading..." sits in the black playfield until DrawRoom
 * puts the new picture on top of it.
-SpegniScena      _HideCursor
+SpegniScena      jsr   MusDuck              ; freeze DOC: loading must not loop the last notes
+                 _HideCursor
                  stz   FillStart
                  lda   #PANOFF
                  sta   FillEnd
@@ -10522,6 +10933,7 @@ ChangeRoom       pha                        ; new room
 :caricata        anop
 
                  jsr   DecodeRoom
+                 jsr   MusUnduck            ; Loading... over: bring the score back
                  stz   ScrollX              ; a new room starts from the left
 
 * the camera limits depend on how wide the room is
@@ -10579,7 +10991,8 @@ ChangeRoom       pha                        ; new room
                  sta   SlotPC,x
                  jsr   GiraSubito
 :fine            rts
-:vuota           stz   RoomW
+:vuota           jsr   MusUnduck
+                 stz   RoomW
                  stz   RoomH
                  lda   #1
                  sta   Redraw
@@ -13082,6 +13495,14 @@ WalkSY           ds    2
 ActDirty         ds    2
 ActTutti         ds    2
 ActSporco        ds    {25}*2
+ActOrd           ds    {25}*2
+ActNOrd          ds    2
+DrawSoloSporco   ds    2
+OrdI             ds    2
+OrdJ             ds    2
+OrdAct           ds    2
+OrdY             ds    2
+OrdTmp           ds    2
 ActScan          ds    2
 TmpAct           ds    2
 EspandiN         ds    2
@@ -13376,6 +13797,8 @@ SfxHave          ds    2
 SndBank          ds    2
 SndPage          ds    2
 SndVol           ds    2
+SfxLvl           ds    2
+GameDP           ds    2
 MusReady         ds    2
 MusOn            ds    2
 MusId            ds    2
@@ -13390,9 +13813,23 @@ MusPlayHi        ds    2
 MusEgoLast       ds    2
 MusPend          ds    2
 MusBurst         ds    2
+MusFreq          ds    2
+MusWSize         ds    2
+MusOsc           ds    2
+MusCh            ds    2
+MusMute          ds    2
+MusLvl           ds    2
+MusEvTick        ds    2
+VolTmp           ds    2
+CometHold        ds    2
+MusOneShot       ds    2
+MusSlot          ds    2
+MusLoadDuck      ds    2
+MusCatch         ds    2
 MusN             ds    8
 MusPtr           ds    8
 MusEnd           ds    8
+MusLastPg        ds    8
 
 SlotNum          ds    {12}*2
 SlotStat         ds    {12}*2

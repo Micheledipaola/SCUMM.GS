@@ -66,14 +66,8 @@ else
   echo "No Amiga disk at $AMIGA_2MG — SFX omitted"
 fi
 
-echo "==> Amiga music 50/58"
+echo "==> music omitted (SFX only)"
 rm -f stage/MM/MUSI stage/MM/MUS0 stage/MM/MUSQ
-if [ -f "$AMIGA_2MG" ]; then
-  python3 "$ROOT/tools/pack_music.py" --amiga-2mg "$AMIGA_2MG" \
-    --map "$ROOT/music/map.txt" --out stage/MM/MUS
-else
-  echo "No Amiga disk — music omitted"
-fi
 
 echo "==> Finder icon"
 mkdir -p stage/Icons
