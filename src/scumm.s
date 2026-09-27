@@ -36,6 +36,14 @@
                  use   4/Event.Macs
                  use   4/Qd.Macs
                  use   4/Sound.Macs
+                 use   4/QdAux.Macs
+                 use   4/Window.Macs
+                 use   4/Menu.Macs
+                 use   4/Ctl.Macs
+                 use   4/Line.Macs
+                 use   4/Dialog.Macs
+                 use   4/List.Macs
+                 use   4/Std.Macs
 
 *----- screen ----------------------------------------------------------
 SHRBASE          =     $E12000
@@ -67,8 +75,7 @@ INVTOP           =     176            ; the four inventory boxes
 INVROW2          =     184
 COLFRECCIA       =     6              ; the arrows, as in the original
 DBGTOP           =     192            ; the last row, for faults
-CRED1TOP         =     176            ; the credit, where on the
-CRED2TOP         =     184            ; credits there is nothing else
+CRED1TOP         =     176            ; the credit, two rows free on the title
 MSGMAX           =     240
 NNOMI            =     10             ; renamed objects
 INVSLOTS         =     16             ; objects that can be carried
@@ -201,6 +208,7 @@ ReadGS           =     $2012
 WriteGS          =     $2013
 CloseGS          =     $2014
 GetEOFGS         =     $2019
+GetPrefixGS      =     $200A
 
 * The save-game disk
 NPOS             =     10             ; the slots on disk, Game A..J
@@ -241,8 +249,17 @@ Start            phk
                  sta   MyID
                  _MTStartUp
 
-*----- six direct pages: three for QuickDraw, one for the Event --------
-*      Manager, and the last one is ours.
+* The Finder's tools are unloaded when it quits: every application loads
+* its own from *:System:Tools, including the RAM patches of the ROM
+* tools (QuickDraw, Event Manager, ...), before starting any of them.
+                 lda   #1
+                 jsr   SfPasso
+                 PushPtr ToolList
+                 _LoadTools
+                 bcc   :tlok
+                 sta   SfErr
+:tlok
+*----- QuickDraw (3), Event Manager, ours, Sound -----------------------
                  PushLong #0
                  PushLong #$0700
                  PushWord MyID
@@ -259,24 +276,6 @@ Start            phk
                  lda   [$00]
                  sta   DPAddr
 
-                 PushWord DPAddr
-                 PushWord #$0000            ; 320 mode
-                 PushWord #SCRPIX
-                 PushWord MyID
-                 _QDStartUp
-
-                 lda   DPAddr
-                 clc
-                 adc   #$0300
-                 pha
-                 PushWord #20
-                 PushWord #0
-                 PushWord #SCRPIX
-                 PushWord #0
-                 PushWord #200
-                 PushWord MyID
-                 _EMStartUp
-
                  lda   DPAddr
                  clc
                  adc   #$0600
@@ -287,6 +286,28 @@ Start            phk
                  adc   #$0500
                  sta   GameDP
                  tcd
+
+* 640 for the Standard File dialog, like the Finder; the game switches
+* to 320 once a folder has been chosen (Avvia320).
+                 lda   #2
+                 jsr   SfPasso
+                 PushWord DPAddr
+                 PushWord #$0080
+                 PushWord #640
+                 PushWord MyID
+                 _QDStartUp
+
+                 lda   DPAddr
+                 clc
+                 adc   #$0300
+                 pha
+                 PushWord #20
+                 PushWord #0
+                 PushWord #640
+                 PushWord #0
+                 PushWord #200
+                 PushWord MyID
+                 _EMStartUp
 
 *----- the three memory blocks -----------------------------------------
 * No alignment is needed: the 65816's [long pointer],Y addressing carries
@@ -349,14 +370,18 @@ Start            phk
                  sta   zpCost+2
 
 *----- go --------------------------------------------------------------
+                 jsr   ScegliGioco
+                 bcc   :cartella
+                 brl   Shutdown
+:cartella        jsr   Avvia320
                  jsr   ClearScreen
                  jsr   SetPalette
+                 jsr   SfMostraErr          ; a Toolbox failure is said, not hidden
                  jsr   InitEspPal
                  _InitCursor
-                 PushPtr FrecciaCur         ; our own arrow, which shows
-                 ldx   #$1104               ; in the dark too (SetCursor)
+                 PushPtr FrecciaCur
+                 ldx   #$1104               ; SetCursor: game arrow after the dialog
                  jsl   $E10000
-
                  jsr   AvviaSuono
                  jsr   LoadIndex
                  bcc   :indexok
@@ -1307,7 +1332,8 @@ Decipher         inc   a                    ; round up to whole words
 :fine            rts
 
 *=======================================================================
-* OpenLFL - open file FileNo. Tries MM/NN.LFL and then 1/MM/NN.LFL
+* OpenLFL - open file FileNo from the folder chosen at startup.
+* Tries GamePre/Lnn.LFL, then 1/GamePre/Lnn.LFL.
 *=======================================================================
 OpenLFL          lda   FileNo
                  ldy   #0
@@ -1319,18 +1345,31 @@ OpenLFL          lda   FileNo
                  bra   :dieci
 :unita           sep   #$20
                  mx    %10
-                 clc
-                 adc   #'0'
-                 sta   PathA+7
-                 sta   PathB+9
+                 pha
+                 lda   #'L'
+                 sta   PathTail
                  tya
                  clc
                  adc   #'0'
-                 sta   PathA+6
-                 sta   PathB+8
+                 sta   PathTail+1
+                 pla
+                 clc
+                 adc   #'0'
+                 sta   PathTail+2
+                 lda   #'.'
+                 sta   PathTail+3
+                 lda   #'L'
+                 sta   PathTail+4
+                 lda   #'F'
+                 sta   PathTail+5
+                 lda   #'L'
+                 sta   PathTail+6
+                 stz   PathTail+7
                  rep   #$20
                  mx    %00
+                 jmp   OpenTail
 
+OpenTail         jsr   MkPaths
                  stz   PathUsata
                  lda   #PathA
                  sta   OpenPath
@@ -1355,10 +1394,307 @@ OpenLFL          lda   FileNo
 :male            sec
                  rts
 
+* GamePre + '/' + PathTail -> PathA;  '1/' + that -> PathB.
+MkPaths          sep   #$20
+                 mx    %10
+                 ldx   #0
+                 lda   GamePre
+                 beq   :tail
+:gpre            cpx   GamePre
+                 bcs   :slash
+                 lda   GamePre+2,x
+                 sta   PathA+2,x
+                 inx
+                 bra   :gpre
+:slash           lda   #'/'
+                 sta   PathA+2,x
+                 inx
+:tail            ldy   #0
+:tlp             lda   PathTail,y
+                 beq   :endt
+                 sta   PathA+2,x
+                 inx
+                 iny
+                 cpy   #15
+                 bcc   :tlp
+:endt            stx   PathA
+                 stz   PathA+1
+                 txa
+                 clc
+                 adc   #2
+                 sta   PathB
+                 stz   PathB+1
+                 lda   #'1'
+                 sta   PathB+2
+                 lda   #'/'
+                 sta   PathB+3
+                 ldx   #0
+:copy            cpx   PathA
+                 bcs   :done
+                 lda   PathA+2,x
+                 sta   PathB+4,x
+                 inx
+                 bra   :copy
+:done            rep   #$20
+                 mx    %00
+                 rts
+
+CopiaSuf         sep   #$20
+                 mx    %10
+                 ldy   #0
+:lp              lda   [zpStr],y
+                 sta   PathTail,y
+                 beq   :fine
+                 iny
+                 cpy   #15
+                 bcc   :lp
+                 lda   #0
+                 sta   PathTail,y
+:fine            rep   #$20
+                 mx    %00
+                 rts
+
 TryOpen          jsl   $E100A8
                  dw    OpenGS
                  adrl  OpenParm
                  rts
+
+*=======================================================================
+* ScegliGioco - Standard File on a Finder-style desktop, 640 mode.
+* Start order as in Apple's samples: Window, Control, LineEdit, Dialog,
+* Menu, List, Standard File (each needs the ones before it).
+* The step number goes to $00/0300: after a crash, "0/300" in the
+* monitor says which call it was.
+* After OK, prefix 0 is the folder that holds L00.LFL.
+* Return carry set if the player cancelled.
+*=======================================================================
+ScegliGioco      lda   SfErr
+                 bne   SfKeepMM              ; LoadTools failed: said later
+                 jsr   AvviaSf
+                 bcs   SfKeepMM
+                 lda   #20
+                 jsr   SfPasso
+                 _InitCursor
+                 PushWord #120               ; whereX
+                 PushWord #40                ; whereY
+                 PushPtr SfPrompt
+                 PushLong #0                 ; no filter
+                 PushLong #0                 ; no type list: every file
+                 PushPtr SfReply
+                 _SFGetFile
+                 lda   #21
+                 jsr   SfPasso
+                 jsr   FermaSf
+                 lda   SfGood
+                 beq   SfCancel
+                 stz   GamePre               ; prefix 0 is the game folder
+                 clc
+                 rts
+SfKeepMM         jsr   FermaSf
+                 clc
+                 rts
+SfCancel         sec
+                 rts
+
+AvviaSf          stz   SfOn
+                 lda   #10
+                 jsr   SfPasso
+                 PushLong #0
+                 PushLong #$0400             ; Control, LineEdit, Menu, SF
+                 PushWord MyID
+                 PushWord #$C005
+                 PushLong #0
+                 _NewHandle
+                 PullLong SfDPHandle
+                 bcc   SfDPok
+                 sta   SfErr
+                 sec
+                 rts
+SfDPok           lda   SfDPHandle
+                 sta   $F0
+                 lda   SfDPHandle+2
+                 sta   $F2
+                 lda   [$F0]
+                 sta   SfDPAddr
+
+                 lda   #11
+                 jsr   SfPasso
+                 _QDAuxStartUp
+                 lda   #12
+                 jsr   SfPasso
+                 PushWord MyID
+                 _WindStartUp
+                 PushLong #0
+                 _RefreshDesktop             ; the system desktop pattern
+                 lda   #13
+                 jsr   SfPasso
+                 PushWord MyID
+                 lda   SfDPAddr
+                 pha
+                 _CtlStartUp
+                 lda   #14
+                 jsr   SfPasso
+                 PushWord MyID
+                 lda   SfDPAddr
+                 clc
+                 adc   #$0100
+                 pha
+                 _LEStartUp
+                 lda   #15
+                 jsr   SfPasso
+                 PushWord MyID
+                 _DialogStartUp
+                 lda   #16
+                 jsr   SfPasso
+                 PushWord MyID
+                 lda   SfDPAddr
+                 clc
+                 adc   #$0200
+                 pha
+                 _MenuStartUp
+                 _DrawMenuBar                ; the empty bar, as on the desktop
+                 lda   #17
+                 jsr   SfPasso
+                 _ListStartup
+                 lda   #18
+                 jsr   SfPasso
+                 PushWord MyID
+                 lda   SfDPAddr
+                 clc
+                 adc   #$0300
+                 pha
+                 _SFStartUp
+                 lda   #1
+                 sta   SfOn
+                 clc
+                 rts
+
+FermaSf          lda   SfOn
+                 beq   SfFermaMem
+                 _SFShutDown
+                 _ListShutDown
+                 _MenuShutDown
+                 _DialogShutDown
+                 _LEShutDown
+                 _CtlShutDown
+                 _WindShutDown
+                 _QDAuxShutDown
+                 stz   SfOn
+SfFermaMem       lda   SfDPHandle
+                 ora   SfDPHandle+2
+                 beq   SfFermaOk
+                 PushLong SfDPHandle
+                 _DisposeHandle
+                 stz   SfDPHandle
+                 stz   SfDPHandle+2
+SfFermaOk        rts
+
+* The game is 320 SHR: restart QuickDraw and the Event Manager in 320.
+Avvia320         lda   #30
+                 jsr   SfPasso
+                 _EMShutDown
+                 _QDShutDown
+                 PushWord DPAddr
+                 PushWord #$0000
+                 PushWord #SCRPIX
+                 PushWord MyID
+                 _QDStartUp
+                 lda   DPAddr
+                 clc
+                 adc   #$0300
+                 pha
+                 PushWord #20
+                 PushWord #0
+                 PushWord #SCRPIX
+                 PushWord #0
+                 PushWord #200
+                 PushWord MyID
+                 _EMStartUp
+                 lda   #31
+                 jsr   SfPasso
+                 rts
+
+SfPasso          sep   #$20
+                 mx    %10
+                 stal  $000300
+                 rep   #$20
+                 mx    %00
+                 rts
+
+* If the Toolbox could not be set up, say so on the game screen and wait
+* for a key; the game then starts from the MM folder.
+SfMostraErr      lda   SfErr
+                 bne   :dire
+                 rts
+:dire            lda   #15
+                 jsr   SetTextColor
+                 stz   TxtX
+                 lda   #80
+                 sta   TxtY
+                 lda   #MsgSfErr
+                 sta   zpStr
+                 lda   #^MsgSfErr
+                 sta   zpStr+2
+                 jsr   DrawCStr
+                 lda   SfErr
+                 jsr   DrawHex4
+                 stz   TxtX
+                 lda   #96
+                 sta   TxtY
+                 lda   #MsgSfTasto
+                 sta   zpStr
+                 lda   #^MsgSfTasto
+                 sta   zpStr+2
+                 jsr   DrawCStr
+:lp              PushWord #0
+                 PushWord #$0028             ; key down, auto-key
+                 PushPtr EventRec
+                 _GetNextEvent
+                 pla
+                 beq   :lp
+                 rts
+
+* A as four hex digits at TxtX/TxtY.
+DrawHex4         sta   HexVal
+                 ldx   #4
+:cifra           lda   HexVal
+                 xba
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 and   #$000F
+                 cmp   #10
+                 bcc   :num
+                 adc   #'A'-10-1
+                 bra   :out
+:num             adc   #'0'
+:out             phx
+                 jsr   DrawCharInk
+                 plx
+                 inc   TxtX
+                 lda   HexVal
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 sta   HexVal
+                 dex
+                 bne   :cifra
+                 rts
+
+* Loaded from *:System:Tools: minimum version 0 = whatever is there.
+ToolList         dw    10
+                 dw    4,0                   ; QuickDraw II (patch)
+                 dw    6,0                   ; Event Manager (patch)
+                 dw    14,0                  ; Window Manager
+                 dw    15,0                  ; Menu Manager
+                 dw    16,0                  ; Control Manager
+                 dw    18,0                  ; QuickDraw Auxiliary
+                 dw    20,0                  ; LineEdit
+                 dw    21,0                  ; Dialog Manager
+                 dw    23,0                  ; Standard File
+                 dw    28,0                  ; List Manager
 
 *=======================================================================
 * Sound: Amiga samples via the Sound Manager free-form synth (gen 1).
@@ -1470,52 +1806,30 @@ LoadSfx          stz   SfxOn
                  adrl  CloseParm
                  rts
 
-ApriSfxI         lda   #PathSfxI
-                 sta   OpenPath
-                 lda   #^PathSfxI
-                 sta   OpenPath+2
-                 jsr   TryOpen
-                 bcc   :ok
-                 lda   #PathSfxI2
-                 sta   OpenPath
-                 lda   #^PathSfxI2
-                 sta   OpenPath+2
-                 jsr   TryOpen
-                 bcs   :no
-:ok              lda   OpenRef
-                 sta   ReadRef
-                 sta   CloseRef
-                 clc
-                 rts
-:no              sec
-                 rts
+ApriSfxI         lda   #SufSfxI
+                 sta   zpStr
+                 lda   #^SufSfxI
+                 sta   zpStr+2
+                 jsr   CopiaSuf
+                 jmp   OpenTail
 
-ApriSfxB         lda   SndBank
+ApriSfxB         ldx   #0
+:c               lda   SufSfx,x
+                 and   #$00FF
+                 sta   PathTail,x
+                 inx
+                 cpx   #3
+                 bcc   :c
+                 lda   SndBank
                  clc
                  adc   #'0'
                  sep   #$20
-                 sta   PathSfx+8
-                 sta   PathSfx2+10
+                 mx    %10
+                 sta   PathTail+3
+                 stz   PathTail+4
                  rep   #$20
-                 lda   #PathSfx
-                 sta   OpenPath
-                 lda   #^PathSfx
-                 sta   OpenPath+2
-                 jsr   TryOpen
-                 bcc   :ok
-                 lda   #PathSfx2
-                 sta   OpenPath
-                 lda   #^PathSfx2
-                 sta   OpenPath+2
-                 jsr   TryOpen
-                 bcs   :no
-:ok              lda   OpenRef
-                 sta   ReadRef
-                 sta   CloseRef
-                 clc
-                 rts
-:no              sec
-                 rts
+                 mx    %00
+                 jmp   OpenTail
 
 * Load the bank that holds sound 28 so the first foyer ticks are not
 * eaten by a 32K GS/OS read.
@@ -1856,120 +2170,20 @@ hIsSound         jsr   FetchB
 LoadMus          stz   MusReady
                  stz   MusOn
                  rts                   ; no score: Amiga samples and DOS PCjr both sounded wrong
-                 lda   #PathMusI
-                 sta   OpenPath
-                 lda   #^PathMusI
-                 sta   OpenPath+2
-                 jsr   TryOpen
-                 bcc   :i
-                 lda   #PathMusI2
-                 sta   OpenPath
-                 lda   #^PathMusI2
-                 sta   OpenPath+2
-                 jsr   TryOpen
-                 bcc   :i
-                 brl   :no
-:i               lda   OpenRef
-                 sta   ReadRef
-                 sta   CloseRef
-                 PushLong #MUSIDX
-                 PushWord #$C000
-                 jsr   GetBlock
-                 bcc   :goti
-                 brl   :chiudi
-:goti            lda   BlockLo
-                 sta   zpMusI
-                 lda   BlockHi
-                 sta   zpMusI+2
-                 sta   ReadBuf+2
-                 lda   BlockLo
-                 sta   ReadBuf
-                 lda   #MUSIDX
-                 sta   ReadCount
-                 stz   ReadCount+2
-                 jsr   ReadAndClose
-                 ldy   #0
-                 lda   [zpMusI],y
-                 cmp   #$4D47               ; 'G','M'
-                 bne   :no
-                 PushLong #SFXALLOC
-                 PushWord #$C000
-                 jsr   GetBlock
-                 bcs   :no
-                 lda   BlockLo
-                 clc
-                 adc   #255
-                 and   #$FF00
-                 sta   MusPlayLo
-                 lda   BlockHi
-                 sta   MusPlayHi
-                 jsr   ApriMus0
-                 bcs   :no
-                 lda   MusPlayLo
-                 sta   ReadBuf
-                 lda   MusPlayHi
-                 sta   ReadBuf+2
-                 lda   #SFXPLAY
-                 sta   ReadCount
-                 stz   ReadCount+2
-                 jsr   ReadAndClose
-                 jsr   DocCopyWaves
-                 PushLong #MUSSEQ
-                 PushWord #$C000
-                 jsr   GetBlock
-                 bcs   :no
-                 lda   BlockLo
-                 sta   zpMus
-                 lda   BlockHi
-                 sta   zpMus+2
-                 lda   #1
-                 sta   MusReady
-:no              rts
-:chiudi          jsl   $E100A8
-                 dw    CloseGS
-                 adrl  CloseParm
-                 rts
 
-ApriMus0         lda   #PathMus0
-                 sta   OpenPath
-                 lda   #^PathMus0
-                 sta   OpenPath+2
-                 jsr   TryOpen
-                 bcc   :ok
-                 lda   #PathMus02
-                 sta   OpenPath
-                 lda   #^PathMus02
-                 sta   OpenPath+2
-                 jsr   TryOpen
-                 bcs   :bad
-:ok              lda   OpenRef
-                 sta   ReadRef
-                 sta   CloseRef
-                 clc
-                 rts
-:bad             sec
-                 rts
+ApriMus0         lda   #SufMus0
+                 sta   zpStr
+                 lda   #^SufMus0
+                 sta   zpStr+2
+                 jsr   CopiaSuf
+                 jmp   OpenTail
 
-ApriMusQ         lda   #PathMusQ
-                 sta   OpenPath
-                 lda   #^PathMusQ
-                 sta   OpenPath+2
-                 jsr   TryOpen
-                 bcc   :ok
-                 lda   #PathMusQ2
-                 sta   OpenPath
-                 lda   #^PathMusQ2
-                 sta   OpenPath+2
-                 jsr   TryOpen
-                 bcs   :bad
-:ok              lda   OpenRef
-                 sta   ReadRef
-                 sta   CloseRef
-                 sta   MarkRef
-                 clc
-                 rts
-:bad             sec
-                 rts
+ApriMusQ         lda   #SufMusQ
+                 sta   zpStr
+                 lda   #^SufMusQ
+                 sta   zpStr+2
+                 jsr   CopiaSuf
+                 jmp   OpenTail
 
 TryMus           sta   MusWant
                  lda   MusReady
@@ -12049,6 +12263,112 @@ DrawChar         and   #$007F
                  bcc   :riga
                  rts
 
+* Same as DrawChar, but only the ink bits: empty cells stay the paper
+* colour. The game font writes a whole 8x8 stamp, which on a white
+* dialog turns every letter into a black brick.
+DrawCharInk      and   #$007F
+                 cmp   #33
+                 bcs   :go
+                 rts
+:go              asl   a
+                 asl   a
+                 asl   a
+                 sta   FontIdx
+                 lda   TxtX
+                 asl   a
+                 asl   a
+                 asl   a
+                 sta   InkX0
+                 lda   TxtY
+                 sta   InkY
+                 stz   Conta8
+:riga            ldx   FontIdx
+                 sep   #$20
+                 mx    %10
+                 lda   FontData,x
+                 sta   Riga8
+                 rep   #$20
+                 mx    %00
+                 inc   FontIdx
+                 lda   InkX0
+                 sta   InkX
+                 lda   #8
+                 sta   BitN
+:bit             sep   #$20
+                 mx    %10
+                 asl   Riga8
+                 rep   #$20
+                 mx    %00
+                 bcc   :skip
+                 jsr   PlotInk
+:skip            inc   InkX
+                 dec   BitN
+                 bne   :bit
+                 inc   InkY
+                 inc   Conta8
+                 lda   Conta8
+                 cmp   #8
+                 bcc   :riga
+                 rts
+
+* Pixel (InkX,InkY) in TxtCol. Leaves the other nibble of the byte.
+PlotInk          lda   InkY
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 sta   TmpW
+                 asl   a
+                 asl   a
+                 clc
+                 adc   TmpW
+                 sta   TmpW
+                 lda   InkX
+                 lsr   a
+                 clc
+                 adc   TmpW
+                 tax
+                 lda   TxtCol
+                 and   #$000F
+                 sta   InkCol
+                 sep   #$20
+                 mx    %10
+                 ldal  SHRBASE,x
+                 tay
+                 lda   InkX
+                 and   #1
+                 bne   :odd
+                 tya
+                 and   #$0F
+                 sta   TmpW
+                 lda   InkCol
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 ora   TmpW
+                 bra   :wr
+:odd             tya
+                 and   #$F0
+                 ora   InkCol
+:wr              stal  SHRBASE,x
+                 rep   #$20
+                 mx    %00
+                 rts
+
+DrawCStr         ldy   #0
+:lp              sty   StrIdx
+                 lda   [zpStr],y
+                 and   #$00FF
+                 beq   :fine
+                 jsr   DrawCharInk
+                 inc   TxtX
+                 ldy   StrIdx
+                 iny
+                 bra   :lp
+:fine            rts
+
 *=======================================================================
 * DrawStr - the long string (zpStr), from TxtX/TxtY
 *=======================================================================
@@ -12303,19 +12623,22 @@ DrawCredit       lda   CurRoom
                  lda   #CRED1TOP
                  sta   TxtY
                  lda   #MsgCred1
-                 sta   zpStr
+                 jsr   CredRiga
+                 lda   #MsgCred2
+                 jsr   CredRiga
+                 lda   #15
+                 jsr   SetTextColor
+                 rts
+
+* A = one credit line in this bank: centred at TxtY, then one row down.
+CredRiga         sta   zpStr
                  lda   #^MsgCred1
                  sta   zpStr+2
                  jsr   DrawStrCenter
-                 lda   #CRED2TOP
+                 lda   TxtY
+                 clc
+                 adc   #8
                  sta   TxtY
-                 lda   #MsgCred2
-                 sta   zpStr
-                 lda   #^MsgCred2
-                 sta   zpStr+2
-                 jsr   DrawStrCenter
-                 lda   #15
-                 jsr   SetTextColor
                  rts
 
 *=======================================================================
@@ -12474,7 +12797,8 @@ DiskError        _InitCursor
                  bra   Shutdown
 
 NoMem            anop
-Shutdown         lda   SndOn
+Shutdown         jsr   FermaSf
+                 lda   SndOn
                  beq   :nosnd
                  PushWord #$FFFF
                  _FFStopSound
@@ -12552,39 +12876,36 @@ WriteCount       adrl  $00000000
 WriteXfer        adrl  $00000000
 
 * ProDOS names must start with a letter, so the game files on the disk
-* are called L00.LFL instead of 00.LFL.
-* The digits are rewritten in PathA+6/+7 and PathB+8/+9.
-PathA            dw    10
-                 asc   'MM/L00.LFL'
-PathB            dw    12
-                 asc   '1/MM/L00.LFL'
-PathSfxI         dw    7
-                 asc   'MM/SFXI'
-PathSfxI2        dw    9
-                 asc   '1/MM/SFXI'
-PathSfx          dw    7
-                 asc   'MM/SFX0'
-PathSfx2         dw    9
-                 asc   '1/MM/SFX0'
-PathMusI         dw    7
-                 asc   'MM/MUSI'
-PathMusI2        dw    9
-                 asc   '1/MM/MUSI'
-PathMus0         dw    7
-                 asc   'MM/MUS0'
-PathMus02        dw    9
-                 asc   '1/MM/MUS0'
-PathMusQ         dw    7
-                 asc   'MM/MUSQ'
-PathMusQ2        dw    9
-                 asc   '1/MM/MUSQ'
+* are called L00.LFL instead of 00.LFL. The folder is chosen at startup.
+PathA            dw    0
+                 ds    62
+PathB            dw    0
+                 ds    62
+GamePre          dw    2
+                 asc   'MM'
+                 ds    14
+PathTail         ds    16
+SufSfxI          asc   'SFXI'
+                 hex   00
+SufSfx           asc   'SFX'
+SufMus0          asc   'MUS0'
+                 hex   00
+SufMusQ          asc   'MUSQ'
+                 hex   00
+SufSave          asc   'SAVE'
+SufL00           asc   'L00.LFL'
+                 hex   00
 
-* And the saved games, in the same folder. The digit is rewritten in
-* PathS1+9 and PathS2+11.
-PathS1           dw    8
-                 asc   'MM/SAVE0'
-PathS2           dw    10
-                 asc   '1/MM/SAVE0'
+SfPrompt         str   'Open the L00.LFL file for the game you want to run:'  ; Pascal string
+SfReply          anop
+SfGood           dw    0
+SfType           dw    0
+SfAux            ds    4
+SfName           ds    16
+MsgSfErr         asc   'Toolbox error $'
+                 hex   00
+MsgSfTasto       asc   'Opening MM - press a key'
+                 hex   00
 
 * The V2 prepositions: they were written inside the engine, not in the
 * game files. These are the English ones; other languages have their own.
@@ -12676,9 +12997,9 @@ MsgMusica        asc   '         Apple IIGS music by'
                  hex   0A
                  asc   '      . . . . . . . . . . . .'
                  hex   00
-MsgCred1         asc   'Porting to IIGS: Michele Di Paola'
+MsgCred1         asc   'SCUMMv2 interpreter for Apple IIGS'
                  dfb   0
-MsgCred2         asc   'aka TheDIPO! / JeDiCrack'
+MsgCred2         asc   'by Michele Di Paola'
                  dfb   0
 MsgLoad          asc   'Loading...'
                  dfb   0
@@ -13081,25 +13402,33 @@ ControllaFirma   ldy   #0
 *=======================================================================
 * The file name is the slot's, in the same folder where OpenLFL found the
 * game files.
-PosPath          lda   PosI
+PosPath          ldx   #0
+:c               lda   SufSave,x
+                 and   #$00FF
+                 sta   PathTail,x
+                 inx
+                 cpx   #4
+                 bcc   :c
+                 lda   PosI
                  clc
                  adc   #'0'
                  sep   #$20
                  mx    %10
-                 sta   PathS1+9
-                 sta   PathS2+11
+                 sta   PathTail+4
+                 stz   PathTail+5
                  rep   #$20
                  mx    %00
+                 jsr   MkPaths
                  lda   PathUsata
                  bne   :seconda
-                 lda   #PathS1
+                 lda   #PathA
                  sta   PathPos
-                 lda   #^PathS1
+                 lda   #^PathA
                  sta   PathPos+2
                  rts
-:seconda         lda   #PathS2
+:seconda         lda   #PathB
                  sta   PathPos
-                 lda   #^PathS2
+                 lda   #^PathB
                  sta   PathPos+2
                  rts
 
@@ -13306,6 +13635,16 @@ DiscoIdx         ds    2
 PosI             ds    2      ; the slot being worked on
 PathPos          ds    4
 PathUsata        ds    2      ; which of the two paths worked
+SfOn             ds    2
+SfDPHandle       ds    4
+SfDPAddr         ds    2
+SfErr            ds    2
+HexVal           ds    2
+InkX             ds    2
+InkY             ds    2
+InkX0            ds    2
+InkCol           ds    2
+BitN             ds    2
 Capo             ds    CAPOLEN
 CutRoom          ds    2      ; the room before a cutscene
 CutCam           ds    2

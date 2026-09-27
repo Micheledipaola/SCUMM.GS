@@ -38,6 +38,13 @@ class Partita:
         self.cpu = self.mondo.cpu
         base, _ = carica_omf(omf or os.path.join(RADICE, 'src', 'SCUMM'),
                              self.mem, BASE_PROG)
+        if listato is None:
+            for cand in (
+                    os.path.join(RADICE, 'src', 'SCUMM_S01_Segment1_Output.txt'),
+                    os.path.join(RADICE, 'src', 'SCUMM_Output.txt')):
+                if os.path.exists(cand):
+                    listato = cand
+                    break
         self.cpu.simboli = simboli(listato or
                                    os.path.join(RADICE, 'src',
                                                 'SCUMM_Output.txt'))

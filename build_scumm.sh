@@ -26,6 +26,10 @@ src, dst = Path(sys.argv[1]), Path(sys.argv[2])
 for p in src.glob('*.Macs.s'):
     (dst / p.name).write_bytes(p.read_bytes().replace(b'\r\n', b'\n').replace(b'\r', b'\n'))
 PY
+mkdir -p "$MACRO_DIR/4"
+for m in Util Locator Mem Misc Event Qd Sound QdAux Window Menu Ctl Line Dialog Std List; do
+  cp "$MACRO_DIR/${m}.Macs.s" "$MACRO_DIR/4/${m}.Macs"
+done
 
 if [ ! -f src/fontdata.s ]; then
   echo "==> font: the one drawn for this project"

@@ -162,6 +162,8 @@ class Mondo:
         self.handle_next = 0x00E000
         self.scritte = []
         self.aperti = {}
+        self.dirlist = {}
+        self.dirpos = {}
         self.refnext = 1
         self.tick = 0
         # how many steps a tick is worth. On a real IIGS it is twelve
@@ -218,8 +220,54 @@ class Mondo:
     def tool(self, numero):
         c = self.cpu
         if numero in (0x0201, 0x0203, 0x0301, 0x0303, 0x0304, 0x0306,
-                      0xCA04, 0x9004, 0x9104, 0x9204):
+                      0xCA04, 0x9004, 0x9104, 0x9204,
+                      0x0212, 0x0312, 0x030E, 0x030F, 0x0310, 0x0314,
+                      0x0315, 0x0317, 0x0308, 0x021C, 0x031C, 0x2A0F):
             return                                  # startups and shutdowns
+        if numero == 0x0E01:                        # LoadTools(list)
+            self.pop32()
+            c.p &= ~0x01
+            return
+        if numero == 0x0F01:                        # LoadOneTool
+            self.pop16()
+            self.pop16()
+            c.p &= ~0x01
+            return
+        if numero in (0x020E, 0x0215, 0x0208):      # Wind/Dialog/Sound StartUp
+            self.pop16()
+            c.p &= ~0x01
+            return
+        if numero in (0x020F, 0x0210, 0x0214, 0x0217):
+            self.pop16()                            # dPage
+            self.pop16()                            # userID
+            c.p &= ~0x01
+            return
+        if numero == 0x390E:                        # RefreshDesktop(rect)
+            self.pop32()
+            return
+        if numero == 0x0F08:                        # FFStopSound
+            self.pop16()
+            return
+        if numero == 0x0E08:                        # FFStartSound
+            self.pop32()
+            self.pop16()
+            return
+        if numero == 0x0917:                        # SFGetFile
+            reply = self.pop32()
+            self.pop32()                            # typeList
+            self.pop32()                            # filterProc
+            self.pop32()                            # prompt
+            self.pop16()                            # whereY
+            self.pop16()                            # whereX
+            self.mem.setw(reply, 1)                 # good
+            self.mem.setw(reply + 2, 0)
+            self.mem.setw(reply + 4, 0)
+            self.mem.setw(reply + 6, 0)
+            nome = b'L00.LFL'
+            self.mem.m[reply + 8] = len(nome)
+            self.mem.m[reply + 9:reply + 9 + len(nome)] = nome
+            c.p &= ~0x01
+            return
         if numero == 0x0202:                        # MMStartUp
             self.metti16(0x1234)
             return
@@ -333,6 +381,15 @@ class Mondo:
                       f"bytes={bytes(m.m[parm:parm+8]).hex(' ')}")
             nome = self.percorso(m.l(parm + 4))
             self.gsos.append(f"Open {nome}")
+            if self._is_dir_path(nome):
+                ref = self.refnext
+                self.refnext += 1
+                self.aperti[ref] = ['<dir>', 0, None]
+                self.dirlist[ref] = self._game_folders()
+                self.dirpos[ref] = 0
+                m.setw(parm + 2, ref)
+                c.p &= ~0x01
+                return
             vero = self.trova(nome)
             if os.environ.get('GSDEBUG'):
                 print(f"  [GS/OS] Open {nome!r} -> {vero!r}")
@@ -397,6 +454,36 @@ class Mondo:
         if chiamata == 0x2014:                      # CloseGS
             ref = m.w(parm + 2)
             self.aperti.pop(ref, None)
+            self.dirlist.pop(ref, None)
+            self.dirpos.pop(ref, None)
+            c.p &= ~0x01
+            return
+        if chiamata == 0x201C:                      # GetDirEntryGS
+            ref = m.w(parm + 2)
+            names = self.dirlist.get(ref)
+            if names is None:
+                c.p |= 0x01
+                c.a = 0x0043
+                return
+            disp = m.w(parm + 8) or 1
+            pos = self.dirpos.get(ref, 0)
+            base = m.w(parm + 6)
+            if base == 0:
+                pos = disp - 1
+            else:
+                pos += disp
+            if pos < 0 or pos >= len(names):
+                c.p |= 0x01
+                c.a = 0x0061
+                return
+            self.dirpos[ref] = pos
+            nome = names[pos]
+            buf = m.l(parm + 10)
+            m.setw(buf + 2, len(nome))
+            for i, ch in enumerate(nome.encode('ascii')[:44]):
+                m.m[buf + 4 + i] = ch
+            m.setw(parm + 14, pos + 1)
+            m.setw(parm + 16, 0x000F)
             c.p &= ~0x01
             return
         if chiamata == 0x2016:                      # SetMarkGS
@@ -427,16 +514,38 @@ class Mondo:
         pezzi = [p for p in nome.replace(':', '/').split('/') if p]
         if pezzi and pezzi[0].isdigit():
             pezzi = pezzi[1:]
-        if pezzi and pezzi[0].upper() == 'MM':
+        if len(pezzi) >= 2:
             pezzi = pezzi[1:]
         if not pezzi:
             return None
         base = pezzi[-1].upper()
         if base.startswith('L') and base.endswith('.LFL'):
-            vero = os.path.join(self.cartella, base[1:])
-            return vero if os.path.exists(vero) else None
+            for cand in (base[1:], base):
+                vero = os.path.join(self.cartella, cand)
+                if os.path.exists(vero):
+                    return vero
+            return None
         vero = os.path.join(self.cartella, base)
         return vero if os.path.exists(vero) else None
+
+    def _is_dir_path(self, nome):
+        s = nome.replace(':', '/').strip('/')
+        return s in ('', '.', '0', '1')
+
+    def _game_folders(self):
+        found = ['MM']
+        try:
+            for name in sorted(os.listdir(self.cartella)):
+                p = os.path.join(self.cartella, name)
+                if not os.path.isdir(p):
+                    continue
+                if (os.path.exists(os.path.join(p, 'L00.LFL'))
+                        or os.path.exists(os.path.join(p, '00.LFL'))):
+                    if name.upper() not in {n.upper() for n in found}:
+                        found.append(name)
+        except FileNotFoundError:
+            pass
+        return found
 
 
 # ----------------------------------------------------------------------
