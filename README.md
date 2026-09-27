@@ -28,7 +28,7 @@ ESC skips a cutscene when the script allowed it, Q asks before quitting, Space
 pauses, Apple-8 asks before restarting.
 
 A few opcodes the game has not needed yet are still stubs. Zak McKracken uses the
-same V2 files but has not been tried; later SCUMM games are a different engine.
+same V2 files but has not been tested yet; later SCUMM games are a different engine.
 
 ## Building
 
@@ -103,9 +103,9 @@ copied the old way.
 
 ### Shadowing and PEI slamming
 
-The PEI slam (Shepherd / Wolf3D IIGS) is six cycles for two bytes: stack
-and direct page sit on a page of bank `$01` SHR memory and `PEI` rewrites
-that page onto itself so the shadow hardware copies it to `$E1`.
+The PEI slam is six cycles for two bytes: stack and direct page sit on a 
+page of bank `$01` SHR memory and `PEI` rewrites that page onto itself 
+so the shadow hardware copies it to `$E1`.
 
 It has **not** been timed on a real IIGS for this engine. Emulator numbers
 for a *second* copy of an already-built buffer were:
@@ -177,8 +177,8 @@ tuned to Maniac Mansion's objects and scripts, not to a generic V2 table.
 
 ## Credits and licence
 
-Written with Claude (Anthropic) for Michele Di Paola, who directs the port, tests every
-build on real hardware and on GSplus, and found most of the bugs described in the
+Written with Claude and Grok for Michele Di Paola, who directs the port, tests every
+build on real hardware and on emulator (GSplus), and found most of the bugs described in the
 comments.
 
 The file formats and the opcode table were worked out from
