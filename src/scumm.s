@@ -473,6 +473,15 @@ MainLoop         jsr   Orologio
                  jsr   RidisegnaAttori
 :nocam           anop
 
+* The F key: compose the whole room every frame, the way every object
+* state change used to. This has to be looked at here, on the way
+* through - inside the lights test below it is jumped over whenever the
+* lights have not changed, which is almost always.
+                 lda   SempreCompone
+                 beq   :nofull
+                 sta   DaComporre
+:nofull          anop
+
 * Safety net: if the scroll has changed since the last time the whole
 * window was blitted, redraw everything anyway. A small rectangle would
 * not do, and the screen would keep looking at the old position.
@@ -641,6 +650,10 @@ MainLoop         jsr   Orologio
                  beq   :debug
                  cmp   #'D'
                  beq   :debug
+                 cmp   #'f'                 ; F: compose the whole room every
+                 beq   :full                ; frame, the way a state change
+                 cmp   #'F'                 ; used to. Slow on purpose: it is
+                 beq   :full                ; there to tell a drawing bug from
                  jsr   TastoGioco
                  brl   :vivi
 :esc             jsr   TastoEsc
@@ -655,6 +668,14 @@ MainLoop         jsr   Orologio
                  eor   #1
                  sta   DbgOn
                  jsr   DrawDbg
+                 brl   :vivi
+* a missing-redraw one. If something appears only with F held on, the
+* piece-by-piece path is not covering it.
+:full            lda   SempreCompone
+                 eor   #1
+                 sta   SempreCompone
+                 lda   #1
+                 sta   DaComporre
                  brl   :vivi
 :stanzaDieci     lda   CurRoom
                  clc
@@ -9582,7 +9603,7 @@ LeggiObj         lda   #28                  ; the first table holds the
 * that many strips runs off the real 48x64 phone-office image and paints
 * garbage (looks like an "exploded" Zak) into the apartment doorway. The
 * stairs are already in the room background — #134 is hotspot-only.
-* Belt: explicit Zak room-3 id 134 skip, then ImgGemella for any twin.
+* Belt: the id test, and the size and place it lands at.
                  lda   IsZak
                  beq   :gemcheck
                  lda   CurRoom
@@ -9607,9 +9628,19 @@ LeggiObj         lda   #28                  ; the first table holds the
                  cmp   #370
                  bcs   :gemcheck
 :skip134         brl   :esci
-:gemcheck        jsr   ImgGemella
-                 bcc   :gemok
-                 brl   :esci
+:gemcheck        anop
+
+* There used to be a general rule here: if another object shares this
+* OBIM and is smaller, this one is the oversized fake, skip it. It was
+* written for #134 above and then asked of every object in every room -
+* and sharing an OBIM is ordinary in V2. It threw away 177 objects in Zak
+* and 162 in Maniac: the television, the refrigerator, the bus, the
+* Golden Gate Bridge, the front door, the nuclear reactor. Mostly
+* invisible, because those objects are usually off; but when a script
+* lights one, nothing is drawn. The power outlet is such a twin of the
+* infrared sensor, which is why using the cord on it set the state and
+* drew nothing. In room 3 it would have taken the bus and the bridge too.
+* The two explicit tests above name the one object that is really wrong.
 :gemok           anop
 
                  lda   DstX                 ; has to fit inside
@@ -9629,88 +9660,6 @@ LeggiObj         lda   #28                  ; the first table holds the
 :ok              clc
                  rts
 :esci            sec
-                 rts
-
-*=======================================================================
-* ImgGemella - carry set if ObjImgOff is a smaller sibling's picture
-*=======================================================================
-* Same picture offset and a strictly smaller w*h: sibling owns the bitmap.
-* Also if they are strictly narrower OR shorter (oversized hotspot twin).
-ImgGemella       lda   BlkW
-                 lsr   a
-                 lsr   a
-                 lsr   a
-                 sta   ImgOurW
-                 lda   BlkH
-                 lsr   a
-                 lsr   a
-                 lsr   a
-                 sta   ImgOurH
-                 lda   ImgOurW
-                 sta   CalcA
-                 lda   ImgOurH
-                 sta   CalcB
-                 jsr   Mul8
-                 sta   ImgArea
-                 ldy   #20
-                 lda   [zpRaw],y
-                 and   #$00FF
-                 asl   a
-                 sta   ConfN
-                 beq   :libera
-                 stz   ConfI
-:lp              lda   ConfI
-                 cmp   ObjIdx
-                 beq   :next
-                 lda   #28
-                 clc
-                 adc   ConfI
-                 tay
-                 lda   [zpRaw],y
-                 cmp   ObjImgOff
-                 bne   :next
-                 lda   #28
-                 clc
-                 adc   ConfN
-                 adc   ConfI
-                 tay
-                 lda   [zpRaw],y
-                 beq   :next
-                 sta   TmpW
-                 clc
-                 adc   #9
-                 tay
-                 lda   [zpRaw],y
-                 and   #$00FF
-                 sta   CalcA
-                 lda   TmpW
-                 clc
-                 adc   #13
-                 tay
-                 lda   [zpRaw],y
-                 and   #$00F8
-                 lsr   a
-                 lsr   a
-                 lsr   a
-                 sta   CalcB
-                 lda   CalcA
-                 cmp   ImgOurW
-                 bcc   :gemella             ; they narrower
-                 lda   CalcB
-                 cmp   ImgOurH
-                 bcc   :gemella             ; they shorter
-                 jsr   Mul8
-                 cmp   ImgArea
-                 bcc   :gemella             ; they smaller area
-:next            lda   ConfI
-                 clc
-                 adc   #2
-                 sta   ConfI
-                 cmp   ConfN
-                 bcc   :lp
-:libera          clc
-                 rts
-:gemella         sec
                  rts
 
 * CalcA * CalcB -> A (8-bit factors, product fits in 16 bits for objects)
@@ -15013,11 +14962,35 @@ DrawGuasto       lda   BadOp
 DrawDbgZak       stz   TxtX
                  lda   #DBGTOP
                  sta   TxtY
-                 lda   #MsgR
+                 lda   SempreCompone        ; F: whole room every frame
+                 beq   :nofull
+                 lda   #MsgFull
+                 jsr   ScriviDbg
+:nofull          lda   #MsgR
                  jsr   ScriviDbg
                  lda   CurRoom
                  jsr   DrawNum
-                 stz   DbgIdx
+* With F on, the line says what the two objects of the power-cord puzzle
+* are doing instead of listing the characters: the whole byte of each,
+* so both the state nibble and the flags are visible. If the numbers do
+* not move when the cord is used on the outlet, the script never set
+* them and nothing about drawing is to blame.
+                 lda   SempreCompone
+                 beq   :attori
+                 lda   #MsgO1
+                 jsr   ScriviDbg
+                 lda   #20
+                 jsr   DbgStatoObj
+                 lda   #MsgO2
+                 jsr   ScriviDbg
+                 lda   #118
+                 jsr   DbgStatoObj
+                 lda   #MsgO3
+                 jsr   ScriviDbg
+                 lda   #131
+                 jsr   DbgStatoObj
+                 rts
+:attori          stz   DbgIdx
 :lp              lda   TxtX                 ; a whole actor record still fits
                  cmp   #20
                  bcc   :c_e
@@ -15037,6 +15010,16 @@ DrawDbgZak       stz   TxtX
                  cmp   #NACT*2
                  bcc   :lp
                  rts
+
+* A = object number: its whole flag byte onto the debug line.
+DbgStatoObj      tax
+                 sep   #$20
+                 mx    %10
+                 lda   ObjFlag,x
+                 rep   #$20
+                 mx    %00
+                 and   #$00FF
+                 jmp   DrawNum
 
 * One actor from DbgIdx onto the debug line (Zak only).
 DbgZakUno        lda   #MsgSpazio
@@ -15586,6 +15569,14 @@ MsgAt            asc   '@'
 MsgComma         asc   ','
                  dfb   0
 MsgZe            asc   'e'
+                 dfb   0
+MsgFull          asc   'F '
+                 dfb   0
+MsgO1            asc   ' c20='
+                 dfb   0
+MsgO2            asc   ' p118='
+                 dfb   0
+MsgO3            asc   ' 131='
                  dfb   0
 MsgZb            asc   ' b'
                  dfb   0
@@ -16361,9 +16352,6 @@ DirtyRs          ds    8
 DirtyBs          ds    8
 
 ObjConfine       ds    2                    ; the pictures end here
-ImgArea          ds    2                    ; w*h cells for ImgGemella
-ImgOurW          ds    2                    ; our width in cells
-ImgOurH          ds    2                    ; our height in cells
 CalcA            ds    2
 CalcB            ds    2
 ConfN            ds    2
@@ -16397,6 +16385,7 @@ CamGo            ds    2
 CutCursor        ds    2
 CutIface         ds    2      ; panel bits saved across a cutscene
 DbgOn            ds    2
+SempreCompone    ds    2      ; F key: compose the whole room every frame
 RndSeed          ds    2
 RndX             ds    2
 RndN             ds    2
