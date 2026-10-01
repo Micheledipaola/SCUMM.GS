@@ -8,6 +8,8 @@ src/fontdata.s
 
 build/
 stage/
+keep_saves/
+.save_extract/
 src/SCUMM
 src/SCUMM_Symbols.txt
 src/*_Output.txt
@@ -20,3 +22,7 @@ src/macrotst*
 src/Util.Macs
 __pycache__/
 *.pyc
+tools/_*
+.cursor/
+tmp/
+.DS_Store

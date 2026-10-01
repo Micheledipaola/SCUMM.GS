@@ -569,10 +569,12 @@ for code, modo, quale in ((0x29, 'imm', 'and'), (0x2D, 'abs', 'and'),
 
 for code, modo in ((0xC9, 'imm'), (0xCD, 'abs'), (0xDD, 'absx'),
                    (0xC5, 'dp'), (0xCF, 'long'), (0xD7, 'indly'),
-                   (0xD9, 'absy')):
+                   (0xD9, 'absy'), (0xC3, 'sr')):
     def fcmp(c, modo=modo):
         if modo == 'imm':
             v = c.fw() if c.m16 else c.fb()
+        elif modo == 'sr':
+            v = c.leggi((c.s + c.fb()) & 0xFFFF, c.m16)
         else:
             addr = {'abs': c.a_abs, 'absx': c.a_absx, 'absy': c.a_absy,
                     'dp': c.a_dp, 'long': c.a_long,

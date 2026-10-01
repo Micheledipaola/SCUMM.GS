@@ -75,7 +75,7 @@ INVTOP           =     176            ; the four inventory boxes
 INVROW2          =     184
 COLFRECCIA       =     6              ; the arrows, as in the original
 DBGTOP           =     192            ; the last row, for faults
-CRED1TOP         =     176            ; the credit, two rows free on the title
+CRED1TOP         =     146            ; interpreter credit, just under the title
 MSGMAX           =     240
 NNOMI            =     10             ; renamed objects
 INVSLOTS         =     16             ; objects that can be carried
@@ -83,9 +83,12 @@ INVLEN           =     256            ; the game's longest obcd fits
 PREPLEN          =     6
 NACT             =     25             ; the game's actors
 NCOST            =     6              ; costumes held in memory at once
-COSTLEN          =     4096
-COSTSIZE         =     24576
+* Zak costume 3 (Melissa) is 5049 bytes; 4096 truncated the L6 hood
+* cel at +4412 so the TV head never drew. 8K holds every Zak costume.
+COSTLEN          =     8192
+COSTSIZE         =     49152          ; NCOST * COSTLEN
 NVERBS           =     16             ; the game uses fifteen
+VERBNAME         =     40             ; Zak's credit lines are this long
 NSENT            =     6              ; sentences waiting
 VERBTOP          =     152            ; where the game puts the panel
 VERBEND          =     176
@@ -116,6 +119,8 @@ YMOVE0           =     $FF9C          ; -100
 VAR_HAVEMSG      =     3              ; "there is a message on screen"
 VAR_CHARCNT      =     7              ; how many letters have come out
 VAR_LAST_SOUND   =     37
+VAR_MUSTIMER     =     17             ; how far the music has got
+VAR_MACHSPD      =     6              ; how fast the machine is (Zak intro)
 VAR_BACKVERB     =     38             ; the verb to fall back to after a sentence
 VAR_KEY          =     39             ; the key pressed, as V2 counts it
 VAR_SENTVERB     =     26
@@ -137,6 +142,10 @@ MASKSIZE         =     20480          ; 960/8 by 128: one bit per pixel
 
 *----- the game --------------------------------------------------------
 MAGICV2          =     $0100          ; signature of the DOS V2 index
+MAGICV1          =     $0A31          ; the classic index is SCUMM V1
+ZAKOBJ           =     780            ; both enhanced V2 indexes have 780
+ZAKSCR           =     155            ; Zak scripts; Maniac's index has 179
+ZAKS1SOGNO       =     $0082          ; script 1: office ESC -> dream (ZakEnh)
 NVARS            =     256
 MAXOBJ           =     800
 MAXSCR           =     256
@@ -152,6 +161,7 @@ MUSIDX           =     256
 MUSSEQ           =     16384
 
 VAR_ROOM         =     4
+VAR_OVERRIDE     =     5              ; 1 after ESC skips a cutscene
 VAR_LIGHTS       =     12
 VAR_CAMMIN       =     23
 VAR_CAMMAX       =     24
@@ -189,6 +199,9 @@ VO_HAVEMSG        =     VAR_HAVEMSG*2
 VO_CHARCNT        =     VAR_CHARCNT*2
 VO_KEY            =     VAR_KEY*2
 VO_LASTSND        =     VAR_LAST_SOUND*2
+VO_MUSTIMER       =     VAR_MUSTIMER*2
+VO_MACHSPD        =     VAR_MACHSPD*2
+VO_OVERRIDE       =     VAR_OVERRIDE*2
 
 MORTO            =     0
 VIVO             =     1
@@ -214,7 +227,8 @@ GetPrefixGS      =     $200A
 NPOS             =     10             ; the slots on disk, Game A..J
 FIRMALEN         =     8
 CAPOLEN          =     FIRMALEN
-SCR_VERBI        =     164            ; the script that rebuilds the panel
+SCR_VERBI_MM     =     164            ; Maniac: rebuilds the verb panel
+SCR_VERBI_ZAK    =     19             ; Zak: same job (room 50 exit starts it too)
 SetMarkGS        =     $2016
 QuitGS           =     $2029
 
@@ -233,6 +247,9 @@ zpSfx            =     $28            ; packed Amiga samples (SFX file)
 zpMusI           =     $2C            ; GMUS index (MUSI)
 zpMus            =     $30            ; current track events (MUSQ)
 zpDoc            =     $34            ; long pointer while copying into DOC RAM
+zpPix2           =     $38            ; the picture, at the column being drawn
+zpMask0          =     $3C            ; the room's own mask as decoded, kept
+*                                       so a piece of it can be put back
 
 *=======================================================================
 Start            phk
@@ -316,7 +333,9 @@ Start            phk
                  PushLong #RAWSIZE
                  PushWord #$C000            ; locked, fixed, one bank only
                  jsr   GetBlock
-                 bcs   :nomem
+                 bcc   :rawok
+:nomem0          brl   NoMem
+:rawok           anop
                  lda   BlockLo
                  sta   zpRaw
                  lda   BlockHi
@@ -325,7 +344,7 @@ Start            phk
                  PushLong #RESSIZE
                  PushWord #$C000
                  jsr   GetBlock
-                 bcs   :nomem
+                 bcs   :nomem0
                  lda   BlockLo
                  sta   zpRes
                  lda   BlockHi
@@ -334,7 +353,7 @@ Start            phk
                  PushLong #PIXSIZE
                  PushWord #$C000            ; locked and fixed
                  jsr   GetBlock
-                 bcs   :nomem
+                 bcs   :nomem0
                  lda   BlockLo
                  sta   zpPix
                  sta   PixBase
@@ -344,7 +363,7 @@ Start            phk
                  PushLong #PIXSIZE
                  PushWord #$C000
                  jsr   GetBlock
-                 bcs   :nomem
+                 bcs   :nomem0
                  lda   BlockLo
                  sta   zpBg
                  lda   BlockHi
@@ -358,6 +377,18 @@ Start            phk
                  sta   zpMask
                  lda   BlockHi
                  sta   zpMask+2
+
+* A second copy of the plane, holding the room's own mask with no object
+* stamped on it. With it, putting one object's rectangle back costs that
+* rectangle instead of decoding the whole room's mask again.
+                 PushLong #MASKSIZE
+                 PushWord #$C000
+                 jsr   GetBlock
+                 bcs   :nomem
+                 lda   BlockLo
+                 sta   zpMask0
+                 lda   BlockHi
+                 sta   zpMask0+2
 
                  PushLong #COSTSIZE
                  PushWord #$C000
@@ -385,6 +416,7 @@ Start            phk
                  jsr   AvviaSuono
                  jsr   LoadIndex
                  bcc   :indexok
+                 jsr   IdxMsg
                  brl   DiskError
 :indexok         jsr   LoadSfx
                  jsr   LoadMus
@@ -408,6 +440,7 @@ Start            phk
 MainLoop         jsr   Orologio
                  jsr   SuonoTick
                  jsr   MsgTick
+                 jsr   TickMusFinta
                  jsr   RunScripts
                  jsr   CheckSentence
 * A game frame is not a loop iteration. Between one frame and the next,
@@ -479,7 +512,14 @@ MainLoop         jsr   Orologio
                  bra   :nodraw
 :pezzo           stz   Redraw
                  jsr   BlitRett
-:nodraw          jsr   GuardaVerbo
+:nodraw          lda   IsZak                ; Zak D-debug: refresh every
+                 beq   :nodbgz              ; frame so elev/xy stay live
+                 lda   DbgOn                ; in cutscenes (no PanDirty)
+                 beq   :nodbgz
+                 jsr   DrawDbg
+:nodbgz          jsr   GuardaVerbo
+                 jsr   AggiornaMouseVirt
+                 jsr   FraseSottoPuntatore
 * Hover is not a panel rebuild: only the verb that goes dark and the one
 * that lights up are rewritten. verbOps still sets VerbsDirty for a
 * full redraw (new names, on/off).
@@ -532,7 +572,8 @@ MainLoop         jsr   Orologio
                  ora   BadOp                ; constantly
                  beq   :nopan
                  jsr   DrawDbg
-:nopan           lda   InvDirty
+:nopan           jsr   AggiornaCredit
+                 lda   InvDirty
                  beq   :noinv
                  stz   InvDirty
                  jsr   CiSonoVerbi
@@ -602,8 +643,7 @@ MainLoop         jsr   Orologio
                  beq   :debug
                  jsr   TastoGioco
                  brl   :vivi
-:esc             jsr   SaltaScena
-                 bcc   :chiedi
+:esc             jsr   TastoEsc
                  brl   :vivi
 :chiedi          jsr   ChiediUscita
                  brl   :vivi
@@ -642,13 +682,190 @@ MainLoop         jsr   Orologio
 :vivi            brl   MainLoop
 
 *=======================================================================
+* TastoEsc - ESC: skip the override if there is one, else maybe quit
+*=======================================================================
+* Auto-repeat (event 5) must not skip and must not quit: the office
+* override to the dream is followed at once by another to gameplay,
+* and a held ESC jumped both, then asked to leave on a black room-0
+* once endCutscene had already cleared CutLiv.
+* While the panel is hidden, room 0 is up, a cutscene is live, or
+* boot script 1 / Zak's post-intro 108 is still running, ESC only
+* skips. Nested skip stays: office -> dream, then -> gameplay.
+TastoEsc         lda   IsZak
+                 bne   :zak
+                 jsr   SaltaScena
+                 bcc   :chiedi
+                 rts
+:zak             lda   #$001B
+                 sta   Vars+VO_KEY
+                 jsr   TaciMsg              ; no StartAnim: mouth stop hung ESC
+                 lda   EvtWhat
+                 cmp   #5
+                 beq   :fine
+                 lda   IsZak
+                 beq   :ovr
+                 lda   #127                 ; office dialogue is live
+                 jsr   GiraScript
+                 beq   :ovr
+                 jmp   SaltaUfficio
+:ovr             jsr   SaltaScena
+                 bcs   :fine
+                 lda   UserIface
+                 beq   :fine
+                 lda   CurRoom
+                 beq   :fine
+                 lda   CutLiv
+                 bne   :fine
+                 lda   #1
+                 jsr   GiraScript
+                 bne   :fine
+                 lda   IsZak
+                 beq   :chiedi
+                 lda   #108
+                 jsr   GiraScript
+                 bne   :fine
+:chiedi          jmp   ChiediUscita
+:fine            rts
+
+* Office ESC: do not trust OvrSlot. Script 1's override at $0074 is
+* goto $0082; we land there, kill 127, and run it now so the dream
+* path starts before the next auto-key.
+SaltaUfficio     ldx   #0
+:cerca           lda   SlotStat,x
+                 beq   :avanti
+                 lda   SlotWhere,x
+                 bne   :avanti
+                 lda   SlotNum,x
+                 cmp   #1
+                 beq   :ok
+:avanti          inx
+                 inx
+                 cpx   #SLOTS*2
+                 bcc   :cerca
+                 rts
+:ok              lda   #ZAKS1SOGNO
+                 sta   SlotPC,x
+                 stz   SlotDelLo,x
+                 stz   SlotDelHi,x
+                 lda   #1
+                 sta   Vars+VO_OVERRIDE
+                 stz   OvrPC
+                 phx
+                 lda   #127
+                 jsr   FermaScript
+                 ldx   #0
+:kdel            stz   SlotDelLo,x
+                 stz   SlotDelHi,x
+                 inx
+                 inx
+                 cpx   #SLOTS*2
+                 bcc   :kdel
+                 ldx   #0
+:kcam            stz   ActMoving,x
+                 inx
+                 inx
+                 cpx   #NACT*2
+                 bcc   :kcam
+                 plx
+                 txa
+                 lsr   a
+                 jsr   ExecSlot
+                 jsr   DrawMsg
+* Script 1 at $0082: loadRoom(0), then the three keep-prints with
+* delay(120/180), then loadRoom(58). Leaving this loop on CurRoom<>0
+* dropped us back into MainLoop with Redraw wiping the line and the
+* delay often still sitting in SlotDelHi. Stay until the dream room
+* or script 1 is done, and tick that slot here (Zak office skip only).
+:attendi         rep   #$30
+                 mx    %00
+                 lda   CurRoom
+                 beq   :gap
+                 cmp   #58
+                 beq   :fatto
+                 cmp   #51
+                 beq   :fatto
+                 cmp   #49
+                 beq   :fatto
+                 cmp   #55
+                 beq   :fatto
+:gap             lda   #1
+                 jsr   GiraScript
+                 beq   :fatto
+                 jsr   Orologio
+                 rep   #$30
+                 mx    %00
+                 lda   #1
+                 sta   Elapsed
+                 jsr   MsgTick
+                 jsr   PompaSogno
+                 lda   MsgNew
+                 beq   :attendi
+                 stz   MsgNew
+                 jsr   DrawMsg
+                 bra   :attendi
+:fatto           rts
+
+* Decrement script 1's delay and run it when it hits 0, same pass.
+* SlotDelHi is forced 0: a leftover $FF from the 24-bit invert made
+* delay(120) last forever and froze on "Later that night".
+PompaSogno       ldx   #0
+:lp              lda   SlotStat,x
+                 beq   :av
+                 lda   SlotWhere,x
+                 bne   :av
+                 lda   SlotNum,x
+                 cmp   #1
+                 beq   :ok
+:av              inx
+                 inx
+                 cpx   #SLOTS*2
+                 bcc   :lp
+                 rts
+:ok              stz   SlotDelHi,x
+                 lda   SlotDelLo,x
+                 beq   :run
+                 sec
+                 sbc   Elapsed
+                 bcs   :resta
+                 lda   #0
+:resta           sta   SlotDelLo,x
+                 bne   :fine
+:run             phx
+                 txa
+                 lsr   a
+                 jsr   ExecSlot
+                 plx
+:fine            rts
+
+*=======================================================================
 * SaltaScena - ESC during a cutscene: jump to the override, carry set
 *=======================================================================
 SaltaScena       lda   OvrPC
                  beq   :no
                  ldx   OvrSlot
                  sta   SlotPC,x
+                 lda   IsZak
+                 bne   :zak
                  stz   OvrPC
+                 sec
+                 rts
+:zak             lda   #1
+                 sta   Vars+VO_OVERRIDE
+                 stz   OvrPC
+                 jsr   SpegniMsg            ; the line on screen is over
+                 ldx   #0                   ; every delay, not only ours:
+:kdel            stz   SlotDelLo,x          ; a leftover wait would freeze
+                 stz   SlotDelHi,x          ; the skip on the office frame
+                 inx
+                 inx
+                 cpx   #SLOTS*2
+                 bcc   :kdel
+                 ldx   #0                   ; leftover walks must not
+:kcam            stz   ActMoving,x          ; waitForActor after the skip
+                 inx
+                 inx
+                 cpx   #NACT*2
+                 bcc   :kcam
                  sec
                  rts
 :no              clc
@@ -710,8 +927,10 @@ ChiediUscita     _HideCursor
                  beq   :no
                  cmp   #$1B
                  bne   :attendi
-:no              jsr   DrawRoom
-                 jsr   DrawMsg
+:no              lda   RoomH
+                 beq   :niente
+                 jsr   DrawRoom
+:niente          jsr   DrawMsg
                  rts
 :si              brl   Shutdown
 
@@ -1119,12 +1338,19 @@ LoadIndex        stz   FileNo
 :caricato        ldy   #0
                  lda   [zpRaw],y
                  cmp   #MAGICV2
+                 beq   :v2
+                 cmp   #MAGICV1
                  bne   :kaputt
+                 lda   #1
+                 sta   IdxV1
+                 bra   :kaputt
 
 * how many objects, and their initial state (owner low, state high)
-                 ldy   #2
+:v2              ldy   #2
                  lda   [zpRaw],y
                  sta   NumObj
+                 stz   IsZak
+                 lda   NumObj
                  cmp   #MAXOBJ+1
                  bcs   :kaputt
 
@@ -1173,6 +1399,19 @@ LoadIndex        stz   FileNo
                  jsr   ReadTable
                  bcs   :male
                  sta   NumScr
+* Both enhanced V2 games have 780 objects. Zak has 155 global scripts,
+* Maniac 179: that is the split. Palette, title credit, dream mask
+* and the other Zak-only bits all look at IsZak after this.
+                 stz   IsZak
+                 lda   #SCR_VERBI_MM        ; default Maniac panel rebuild
+                 sta   ScrVerbi
+                 lda   NumScr
+                 cmp   #ZAKSCR
+                 bne   :nozak
+                 inc   IsZak
+                 lda   #SCR_VERBI_ZAK
+                 sta   ScrVerbi
+:nozak           jsr   PalettaAttori
 
                  lda   #MAXSND
                  sta   TabMax
@@ -2097,7 +2336,43 @@ hStartSound      jsr   VOB1
 :ok              stz   Esito
                  rts
 
-hStopMusic       jsr   StopMus
+* startMusic. Zak's intro waits on the music timer: with no score to play
+* that timer would never move, so it counts seconds instead.
+hStartMusic      jsr   VOB1
+                 pha
+                 jsr   TryMus
+                 bcc   :mus
+                 pla
+                 jsr   PlaySfx
+                 lda   IsZak
+                 beq   :ok
+                 lda   #1
+                 sta   MusFinta
+                 stz   MusFintaT
+                 stz   Vars+VO_MUSTIMER
+                 bra   :ok
+:mus             pla
+                 stz   MusFinta
+:ok              stz   Esito
+                 rts
+
+* One step of the stand-in music timer, once a second.
+TickMusFinta     lda   MusFinta
+                 beq   :fine
+                 lda   MusFintaT
+                 clc
+                 adc   Elapsed
+:ancora          cmp   #60
+                 bcc   :resto
+                 sec
+                 sbc   #60
+                 inc   Vars+VO_MUSTIMER
+                 bra   :ancora
+:resto           sta   MusFintaT
+:fine            rts
+
+hStopMusic       stz   MusFinta
+                 jsr   StopMus
                  lda   PlayingId
                  cmp   #50
                  beq   :sfx
@@ -2126,10 +2401,36 @@ hIsSound         jsr   FetchB
                  stx   DestVar
                  jsr   VOB1
                  sta   MusTmp
+* No sample in the GSFX index: not running. Zak's intro waits on
+* sound 81 (credits sting) which we do not pack; treating a stale
+* PlayingId as live froze ESC-from-the-office on a dead wait.
+                 lda   zpSfx
+                 ora   zpSfx+2
+                 beq   :nosfx
+                 lda   MusTmp
+                 cmp   #MAXSND
+                 bcs   :nosfx
+                 asl   a
+                 asl   a
+                 asl   a
+                 clc
+                 adc   #8
+                 tay
+                 iny
+                 iny
+                 lda   [zpSfx],y
+                 and   #$00FF
+                 bne   :cplay
+:nosfx           lda   MusTmp
+                 cmp   PlayingId
+                 bne   :cmus
+                 stz   PlayingId
+                 bra   :cmus
+:cplay           lda   MusTmp
                  ldx   DestVar
                  cmp   PlayingId
                  beq   :si
-                 lda   MusReady
+:cmus            lda   MusReady
                  beq   :zero
                  lda   MusTmp
                  cmp   MusId
@@ -2150,11 +2451,13 @@ hIsSound         jsr   FetchB
                  bne   :zero
 :muson           lda   MusOn
                  beq   :zero
-:si              lda   #1
+:si              ldx   DestVar
+                 lda   #1
                  sta   Vars,x
                  stz   Esito
                  rts
-:zero            lda   #0
+:zero            ldx   DestVar
+                 lda   #0
                  sta   Vars,x
                  stz   Esito
                  rts
@@ -2823,8 +3126,9 @@ SlotCostume      sta   CostWant
                  ldx   #0
 :cerca           lda   CostNum,x
                  cmp   CostWant
-                 beq   :trovato
-                 inx
+                 bne   :avanti
+                 brl   :trovato
+:avanti          inx
                  inx
                  cpx   #NCOST*2
                  bcc   :cerca
@@ -2832,15 +3136,18 @@ SlotCostume      sta   CostWant
 * not there: load it over the oldest one
                  lda   CostWant
                  cmp   NumCos
-                 bcs   :male
-                 asl   a
+                 bcc   :numok
+                 brl   :male
+:numok           asl   a
                  tax
                  lda   CosOffs,x
                  sta   ScrOff
-                 beq   :male
-                 cmp   #$FFFF
-                 beq   :male
-                 ldx   CostWant
+                 bne   :offok
+                 brl   :male
+:offok           cmp   #$FFFF
+                 bne   :offok2
+                 brl   :male
+:offok2          ldx   CostWant
                  sep   #$20
                  mx    %10
                  lda   CosRoom,x
@@ -2860,7 +3167,7 @@ SlotCostume      sta   CostWant
                  lda   #0
 :giro            sta   CostNext
 
-                 lda   CostSlot             ; slot * 4096
+                 lda   CostSlot             ; slot * COSTLEN (8192)
                  asl   a
                  asl   a
                  asl   a
@@ -2872,6 +3179,7 @@ SlotCostume      sta   CostWant
                  asl   a
                  asl   a
                  asl   a
+                 asl   a                    ; (slot*2)<<12 = slot*8192
                  sta   CostOff
                  clc
                  adc   zpCost
@@ -2882,8 +3190,19 @@ SlotCostume      sta   CostWant
                  lda   #COSTLEN
                  sta   DestMax
                  jsr   LoadResIn
-                 bcs   :male
-                 ldx   CostSlot
+                 bcc   :caricato
+                 brl   :male
+:caricato        anop
+* Zak costume 31: stock LFL leaves the pointing cel's armpit hollow
+* (cols 7-14, rows 16-18). Patch the RAM copy after decipher so the
+* fix lands even when SFGet pointed at an unpatched ZakEnh folder.
+                 lda   IsZak
+                 beq   :segnato
+                 lda   CostWant
+                 cmp   #31
+                 bne   :segnato
+                 jsr   PatchCost31Arm
+:segnato         ldx   CostSlot
                  lda   CostWant
                  sta   CostNum,x
                  clc
@@ -2891,6 +3210,25 @@ SlotCostume      sta   CostWant
 :trovato         clc
                  rts
 :male            sec
+                 rts
+
+* PatchCost31Arm - overwrite cel +104 in the buffer at zpStr (just
+* loaded). Cel31Arm lives with the other tables; keep this stub short
+* so SlotCostume's bcs :male still fits in a branch.
+CEL31ARM_OFF     =     104
+CEL31ARM_LEN     =     141
+PatchCost31Arm   ldx   #0
+                 ldy   #CEL31ARM_OFF
+                 sep   #$20
+                 mx    %10
+:lp              lda   Cel31Arm,x
+                 sta   [zpStr],y
+                 inx
+                 iny
+                 cpx   #CEL31ARM_LEN
+                 bcc   :lp
+                 rep   #$20
+                 mx    %00
                  rts
 
 *=======================================================================
@@ -2908,6 +3246,7 @@ BaseCostume      txa
                  asl   a
                  asl   a
                  asl   a
+                 asl   a                    ; (slot*2)<<12 = slot*8192
                  clc
                  adc   zpCost
                  sta   zpStr
@@ -2967,6 +3306,8 @@ ResetLimbs       stz   LimbNo
 *              leaving the others alone.
 *=======================================================================
 CostDecode       sta   DecFrame
+                 rep   #$30
+                 mx    %00
                  ldx   ActIdx
                  lda   ActCost,x
                  bne   :c_e
@@ -2991,8 +3332,7 @@ CostDecode       sta   DecFrame
                  clc
                  adc   ActFace,x
                  sta   AnimNo
-                 cmp   NAnim                ; in the original the test is
-                 beq   :dentro              ; only "greater"
+                 cmp   NAnim                ; NAnim is a count: 0..NAnim-1
                  bcc   :dentro
                  rts
 :dentro          asl   a
@@ -3174,26 +3514,180 @@ SetFacing        ldx   ActIdx
 *=======================================================================
 * Three passes, in the original's order: standing, then the head, then
 * the mouth closed. Each adds its limbs to the ones already placed.
-ShowActor        jsr   ResetLimbs
+ShowActor        lda   IsZak
+                 bne   :zak
+                 jsr   ResetLimbs
                  ldx   ActIdx
                  lda   ActFace,x            ; anyone who never turned
                  bne   :hagia               ; looks forward
                  lda   #2
                  sta   ActFace,x
-:hagia           anop
-                 lda   #1
+:hagia           lda   #1
                  jsr   StartAnim
                  lda   #2
                  jsr   StartAnim
                  lda   #4
                  jsr   StartAnim
-                 ldx   ActIdx
+                 bra   :vis
+:zak             jsr   ApplicaPalCost
+                 jsr   FermaPose
+                 jsr   AssegnaCasella
+:vis             ldx   ActIdx
                  lda   #1
                  sta   ActVis,x
                  lda   ActX,x
                  sta   ActOldX,x
                  lda   ActY,x
                  sta   ActOldY,x
+                 rts
+
+* Standing still: drop leftover walk limbs, then the three V2 layers
+* (body, head, mouth). StartAnim 1 alone leaves the legs walking.
+FermaPose        jsr   ResetLimbs
+                 lda   #1
+                 jsr   StartAnim
+                 lda   #2
+                 jsr   StartAnim
+                 lda   #4
+                 jmp   StartAnim
+
+* actorOps Color: costume colour index -> the colour that is drawn.
+* V2 (both games) starts from identity 0..15, then Color(index, colour)
+* writes ActPal[index]=colour. DrawPal is that table plus the two
+* ClassicCostumeRenderer rules: index 12 is skin ($0C), and the
+* costume's single colour byte is replaced with palette[0].
+RemapColore      lda   CelColor
+                 and   #$000F
+                 tax
+                 lda   DrawPal,x
+                 and   #$00FF
+                 sta   CelColor
+                 rts
+
+ResetPalUno      lda   ActIdx               ; identity 0..15 for one actor
+                 asl   a
+                 asl   a
+                 asl   a
+                 tax
+                 ldy   #0
+                 sep   #$20
+                 mx    %10
+:b               tya
+                 sta   ActPal,x
+                 inx
+                 iny
+                 cpy   #16
+                 bcc   :b
+                 rep   #$20
+                 mx    %00
+                 rts
+
+PreparaPalAttore lda   ActIdx
+                 asl   a
+                 asl   a
+                 asl   a
+                 tax
+                 ldy   #0
+                 sep   #$20
+                 mx    %10
+:c               lda   ActPal,x
+                 sta   DrawPal,y
+                 inx
+                 iny
+                 cpy   #16
+                 bcc   :c
+                 lda   #12                  ; V2 EGA: colour 12 is always skin
+                 sta   DrawPal+12
+                 ldy   #6
+                 lda   [zpStr],y            ; costume colour byte: that
+                 and   #$0F                 ; index is drawn as palette[0]
+                 tay
+                 lda   DrawPal
+                 sta   DrawPal,y
+                 rep   #$20
+                 mx    %00
+                 rts
+
+PalettaAttori    stz   ActIdx
+:lp              jsr   ResetPalUno
+                 lda   ActIdx
+                 clc
+                 adc   #2
+                 sta   ActIdx
+                 cmp   #NACT*2
+                 bcc   :lp
+                 lda   IsZak
+                 beq   :fine
+                 sep   #$20
+                 mx    %10
+                 lda   #0                   ; Zak's suit (9, 14) is black
+                 sta   ActPal+16+1          ; and so is colour 1 (hair /
+                 sta   ActPal+16+9          ; outline). Other actors keep
+                 sta   ActPal+16+14         ; their colours (the flying hat)
+                 rep   #$20
+                 mx    %00
+:fine            rts
+
+* Costume colours that the scripts only remap on one actor, or that
+* vanish into the background (dream cloud, office carpet).
+ApplicaPalCost   lda   IsZak
+                 bne   :c_e
+                 rts
+:c_e             ldx   ActIdx
+                 lda   ActElev,x
+                 sta   TmpW2                ; 0: pointing alien, else the hat
+                 lda   ActCost,x
+                 sta   TmpW
+                 txa
+                 asl   a
+                 asl   a
+                 asl   a
+                 tax
+                 sep   #$20
+                 mx    %10
+                 lda   TmpW
+                 cmp   #32
+                 bne   :n32
+                 lda   #0
+                 sta   ActPal+1,x
+                 sta   ActPal+9,x
+                 sta   ActPal+14,x
+                 bra   :zak1
+:n32             cmp   #28              ; the two aliens: the suit is
+                 beq   :nero28              ; colour 1 (and 6). DOS paints
+                 cmp   #31                  ; both suits black. Leave 4,
+                 bne   :zak1                ; 12 and 14: tie, cuff, skin.
+* Costume 31 (flying hat): colour 1 = glasses band + stems. DOS paints
+* it black (palette 0 is still drawn — file-0 alone is transparent).
+* Keep pal[6]=6 (brim shading).
+                 lda   #0
+                 sta   ActPal+1,x
+                 lda   #6
+                 sta   ActPal+6,x
+                 lda   #9
+                 sta   ActPal+9,x
+                 lda   #8
+                 sta   ActPal+8,x
+                 bra   :zak1
+:nero28          lda   #0
+                 sta   ActPal+1,x
+                 sta   ActPal+6,x
+:zak1            ldx   ActIdx
+                 cpx   #2
+                 bne   :8ok
+                 lda   TmpW                 ; office blacks: costume 1, or 30
+                 cmp   #1                   ; which the boot script uses with
+                 beq   :nero                ; Color(9,0). Identity here made
+                 cmp   #30                  ; the suit blue and ate the feet.
+                 beq   :nero
+                 cmp   #32
+                 bne   :8ok
+:nero            lda   #0
+                 sta   ActPal+16+1
+                 sta   ActPal+16+9
+                 sta   ActPal+16+14
+:8ok             rep   #$20
+                 mx    %00
                  rts
 
 *=======================================================================
@@ -3355,20 +3849,100 @@ DisegnaOrdine    ldx   #0
 * The walk box the actor stands on says whether any of the background
 * passes in front of him: that is the box's mask byte, and it holds for
 * the whole drawing.
-DrawActor        stz   MascAtt
+DrawActor        rep   #$30
+                 mx    %00
+                 jsr   ApplicaPalCost
+                 stz   MascAtt
+                 stz   TvSoftMask
                  lda   NumBox
-                 beq   :senza
+                 bne   :cisono
+                 brl   :senza
+:cisono          anop
+* Zak room 49's box is the whole cloud with mask 3. Zak (costume
+* 30) stands on the ground: without the mask he is drawn in front
+* of the cross. Costume 31 (pointing alien and flying hat) must
+* not use that plane: it ate the arm, and the same mask punched
+* a black hole in the hat.
+                 lda   IsZak
+                 beq   :conmask
+                 lda   CurRoom
+                 cmp   #49
+                 bne   :conmask
+                 ldx   ActIdx
+                 lda   ActCost,x
+                 and   #$00FF
+                 cmp   #31
+                 bne   :conmask
+                 brl   :senza
+:conmask         lda   #1
+                 sta   BoxLockOk
                  ldx   ActIdx
                  lda   ActX,x
                  sta   BoxQx
                  lda   ActY,x
                  sta   BoxQy
-                 jsr   CasellaDelPunto
+                 lda   IsZak
+                 beq   :mmfoot
+* Prefer ActBox when the feet are still inside it. Room 3 stairs box 0
+* (mask 3) overlaps box 1 by one Y of slack: CasellaDelPunto alone kept
+* mask 3 on the bottom step and left a doorway trail while walking down.
+                 lda   ActBox,x
                  cmp   #$FFFF
-                 bne   :hobox
+                 beq   :mmfoot
+                 cmp   NumBox
+                 bcs   :mmfoot
+                 jsr   DentroCasella
+                 bcs   :mmfoot
                  ldx   ActIdx
                  lda   ActBox,x
-:hobox           jsr   MascheraCasella
+                 bra   :gottmp
+:mmfoot          jsr   CasellaDelPunto
+:gottmp          stz   BoxLockOk
+                 sta   TmpW
+                 cmp   #$FFFF
+                 bne   :trovata
+                 ldx   ActIdx
+                 lda   ActBox,x
+                 bra   :hobox
+* Living-room TV (room 2, locked box 4): Annie and Melissa (spacesuit)
+* are putActor'd there and must keep mask 3. Zak walking past must NOT
+* pick up that box from underfoot or he is drawn inside the set.
+:trovata         lda   IsZak
+                 beq   :usatmp
+                 lda   CurRoom
+                 cmp   #2
+                 bne   :usatmp
+                 ldx   ActIdx
+                 lda   ActBox,x
+                 cmp   #4
+                 beq   :intv                ; stored TV box wins
+                 lda   TmpW
+                 cmp   #4
+                 bne   :usatmp
+                 lda   ActBox,x             ; underfoot is TV, actor is not
+                 cmp   NumBox
+                 bcc   :hobox
+                 lda   #0
+                 bra   :hobox
+:intv                             lda   #4
+                 jsr   CasellaN             ; glass = objs 114-116 @ (120,32)
+                 lda   #28                  ; 64x32; hood peeks at ~y30
+                 sta   TvSoftY1
+                 lda   #64                  ; screen bottom (was 72: overdraw
+                 sta   TvSoftY2             ; on the silver TV lip)
+* CelPx is room space; do NOT add ScrollX.
+                 lda   #112                 ; 120-8 slack
+                 sta   TvSoftX1
+                 lda   #192                 ; 120+64+8 slack
+                 sta   TvSoftX2
+                 lda   #1
+                 sta   TvSoftMask
+                 lda   #4
+                 bra   :hobox
+:usatmp          lda   TmpW
+:hobox           sta   TmpW                 ; keep box number
+:domask          lda   TmpW
+                 jsr   MascheraCasella
                  sta   MascAtt
 
 :senza           ldx   ActIdx
@@ -3377,6 +3951,7 @@ DrawActor        stz   MascAtt
                  bcc   :ok
                  rts
 :ok              jsr   BaseCostume          ; zpStr = start of the costume
+                 jsr   PreparaPalAttore
                  ldy   #7
                  lda   [zpStr],y
                  sta   CmdOff               ; the animation commands
@@ -3481,7 +4056,9 @@ DrawLimb         lda   LimbNo               ; where its frames are
                  tay
                  lda   [zpStr],y
                  sta   FramePtr
-                 lda   LimbCmd
+                 bne   :c_eframe
+                 rts
+:c_eframe        lda   LimbCmd
                  asl   a
                  clc
                  adc   FramePtr
@@ -3489,17 +4066,30 @@ DrawLimb         lda   LimbNo               ; where its frames are
                  lda   [zpStr],y
                  sta   CelPtr
 
-                 ldy   CelPtr               ; sizes and offsets
+                 lda   CelPtr               ; a frame table that landed on
+                 cmp   #12                  ; the header is not a picture
+                 bcs   :c_eptr
+                 rts
+:c_eptr          cmp   #COSTLEN-12          ; nor is one past the slot
+                 bcc   :c_eslot
+                 rts
+:c_eslot         ldy   CelPtr               ; sizes and offsets
                  lda   [zpStr],y
                  sta   CelW
-                 bne   :larga
+                 bne   :c_ew
                  rts
-:larga           ldy   CelPtr
+:c_ew            cmp   #80                  ; a garbled limb is 200+ wide and
+                 bcc   :c_ewok              ; paints the room with the costume
+                 rts
+:c_ewok          ldy   CelPtr
                  iny
                  iny
                  lda   [zpStr],y
                  sta   CelH
-                 bne   :alta
+                 bne   :c_eh
+                 rts
+:c_eh            cmp   #100
+                 bcc   :alta
                  rts
 :alta            anop
                  ldy   CelPtr
@@ -3556,11 +4146,18 @@ DrawLimb         lda   LimbNo               ; where its frames are
 * Where it lands on screen. The scripts count x in steps of eight and y
 * in steps of two: that is the V2 scale. Without mirroring the piece
 * sits to the left of the anchor instead of to the right.
+* The anchor is the actor's x times eight: the cel's own xmove is added
+* to it, and a mirrored cel is laid out backwards from the same anchor.
+* Nothing is added on top of that. An earlier +8 (+16 facing left) broke
+* the left/right pair out of mirror symmetry about the anchor and pushed
+* Zak a whole strip to the right, which is what put him behind the room-3
+* door jamb instead of in the opening.
                  ldx   ActIdx
                  lda   ActX,x
                  asl   a
                  asl   a
                  asl   a
+                 sta   TmpW
                  ldy   MirrorOn
                  beq   :arovescio
                  clc
@@ -3575,10 +4172,21 @@ DrawLimb         lda   LimbNo               ; where its frames are
 :messax          anop
                  lda   ActY,x
                  asl   a
+                 pha
+                 lda   IsZak
+                 bne   :elev
+                 pla
                  clc
                  adc   CelY
                  sta   CelY
-
+                 bra   :gy
+:elev            pla
+                 sec
+                 sbc   ActElev,x            ; setActorElevation, in pixels
+                 clc
+                 adc   CelY
+                 sta   CelY
+:gy              anop
 * Grow the sprite's box by this piece. Clip to zero before comparing:
 * that way every number is positive and the comparison need not care
 * about signs (with cmp and bpl a piece left of the edge gave the
@@ -3617,8 +4225,41 @@ DrawLimb         lda   LimbNo               ; where its frames are
                  clc
                  adc   #12
                  sta   CelSrc
-                 jsr   PaintCel
-:fine            rts
+* Zak costume 31 is the flying hat only (dream). Side view is 20x22:
+* colour-1 glasses band on the crown (keep) + thin stems below the brim.
+* The cel's row 15 is a solid colour-1 bar that reads as a black blob and
+* swallows the stems — HatClip+HatRowSkip punch only that band (and any
+* leftover gap fill), never the crown band on rows 9-11.
+* Front/back hat is 18x22 (chin scrap only). Tiny 4x2 crumbs are dropped.
+                 stz   HatClip
+                 lda   IsZak
+                 beq   :paint
+                 ldx   ActIdx
+                 lda   ActCost,x
+                 and   #$00FF
+                 cmp   #31
+                 bne   :paint
+                 lda   CelW
+                 cmp   #20
+                 beq   :w20
+                 cmp   #18
+                 beq   :cappello
+                 lda   CelH                 ; 4x2 crumbs only
+                 cmp   #3
+                 bcs   :paint
+                 rts
+:w20             ldx   ActIdx               ; side face: clip stem-blob bar
+                 lda   ActFace,x
+                 cmp   #2
+                 bcs   :paint
+                 lda   #1
+                 sta   HatClip
+                 bra   :paint
+:cappello        lda   #1                   ; 18x22: chin scrap via HatRowSkip
+                 sta   HatClip
+:paint           jsr   PaintCel
+                 stz   HatClip
+                 rts
 
 *=======================================================================
 * PaintCel - the compressed picture, column by column
@@ -3657,12 +4298,19 @@ PaintCel         stz   CelCol
                  lsr   a
                  lsr   a
                  sta   CelColor
-* Lights bit 3 is read once per cel, not once per run: in the dark every
-* non-transparent pixel is grey (8), as in the original.
-                 lda   CelLit
-                 bne   :coloreok
+* Colour 0 in the file is transparent. actorOps Color may paint a real
+* colour as 0 (Zak's black suit): that pixel must still be drawn.
+                 stz   CelSkip
                  lda   CelColor
-                 beq   :coloreok
+                 beq   :era0
+                 jsr   RemapColore
+                 bra   :doporemap
+:era0            lda   #1
+                 sta   CelSkip
+:doporemap       lda   CelLit
+                 bne   :coloreok
+                 lda   CelSkip
+                 bne   :coloreok
                  lda   #8
                  sta   CelColor
 :coloreok        lda   TmpW
@@ -3678,8 +4326,9 @@ PaintCel         stz   CelCol
 :dentro          lda   CelH
                  sec
                  sbc   CelRow
-                 beq   :finecol
-                 sta   RunNow
+                 bne   :ceriga
+                 brl   :finecol
+:ceriga          sta   RunNow
                  lda   CelRun
                  cmp   RunNow
                  bcs   :cap
@@ -3689,11 +4338,12 @@ PaintCel         stz   CelCol
                  sbc   RunNow
                  sta   CelRun
 
-                 lda   CelColor
-                 beq   :trasp               ; zero = skip that many rows
-                 lda   MascAtt
+                 lda   CelSkip
+                 beq   :opaco
+                 bra   :trasp
+:opaco           lda   MascAtt
                  bne   :lento
-                 lda   CelPx
+:veloce          lda   CelPx
                  bmi   :trasp
                  cmp   RoomW
                  bcs   :trasp
@@ -3716,6 +4366,64 @@ PaintCel         stz   CelCol
                  bcs   :fine
                  brl   :colonna
 :fine            rts
+
+* HatRowSkip - carry set: skip a hat pixel.
+* Side face (0/1): skip remapped-black (costume 1→0) on rows 15-18,
+* cols 7-14 — solid bar under the brim. Keeps crown glasses and stems.
+* Front 18x22: skip only remapped-black on rows 18+ (chin scrap). Do NOT
+* skip colour C/4 — that is the nose (rows 18-20); skipping all pixels
+* there left a stub nose.
+HatRowSkip       lda   HatClip
+                 beq   :hno
+                 ldx   ActIdx
+                 lda   ActFace,x
+                 cmp   #2
+                 bcs   :front
+* side: blob band
+                 lda   CelColor
+                 bne   :hno
+                 lda   CelRow
+                 cmp   #15
+                 bcc   :hno
+                 cmp   #19
+                 bcs   :hno
+                 lda   CelCol
+                 cmp   #7
+                 bcc   :hno
+                 cmp   #15
+                 bcs   :hno
+                 bra   :hsi
+:front           lda   CelW
+                 cmp   #18
+                 bne   :hno
+                 lda   CelRow
+                 cmp   #18
+                 bcc   :hno
+                 lda   CelColor             ; 0 = chin scrap after remap
+                 bne   :hno                 ; keep nose (C, 4, …)
+:hsi             sec
+                 rts
+:hno             clc
+                 rts
+
+* TvMaskPunch - carry clear: paint through walkbehind inside the TV glass.
+* Only overrides a set mask bit; never skips pixels outside the rect.
+TvMaskPunch      lda   TvSoftMask
+                 beq   :tno
+                 lda   CelPx
+                 cmp   TvSoftX1
+                 bcc   :tno
+                 cmp   TvSoftX2
+                 bcs   :tno
+                 lda   SoftY
+                 cmp   TvSoftY1
+                 bcc   :tno
+                 cmp   TvSoftY2
+                 bcs   :tno
+                 clc
+                 rts
+:tno             sec
+                 rts
 
 * CelRunFast - RunNow opaque pixels, no walk-box mask, CelPx on screen.
 * Clip to the visible rows once. CelRow still advances by the full run
@@ -3743,12 +4451,18 @@ CelRunFast       lda   CelRow
 :skip            lda   RunNow
                  bne   :c_e
                  rts
-:c_e             lda   CelRy
+:c_e             jsr   HatRowSkip
+                 bcs   :salta
+                 lda   CelRy
                  bmi   :salta
                  cmp   RoomH
                  bcs   :tuttofuori
                  cmp   #ROOMROWS
                  bcs   :tuttofuori
+* HatClip needs a per-row re-check: a vertical colour-1 run that starts
+* above the blob band would otherwise paint the whole run in :pronto.
+                 lda   HatClip
+                 bne   :uno
                  bra   :pronto
 :salta           inc   CelRy
                  inc   CelRow
@@ -3759,6 +4473,37 @@ CelRunFast       lda   CelRow
                  adc   RunNow
                  sta   CelRow
                  rts
+
+:uno             lda   CelRy
+                 asl   a
+                 tax
+                 lda   RowOff,x
+                 clc
+                 adc   TmpW
+                 tay
+                 lda   Dispari
+                 bne   :unoB
+                 sep   #$20
+                 mx    %10
+                 lda   [zpPix],y
+                 and   #$0F
+                 ora   TmpW2
+                 sta   [zpPix],y
+                 rep   #$20
+                 mx    %00
+                 bra   :unoAv
+:unoB            sep   #$20
+                 mx    %10
+                 lda   [zpPix],y
+                 and   #$F0
+                 ora   CelColor
+                 sta   [zpPix],y
+                 rep   #$20
+                 mx    %00
+:unoAv           inc   CelRy
+                 inc   CelRow
+                 dec   RunNow
+                 brl   :skip
 
 :pronto          lda   RoomH
                  cmp   #ROOMROWS
@@ -3854,13 +4599,17 @@ CelRunMask       lda   CelRow
 :skip            lda   RunNow
                  bne   :c_e
                  rts
-:c_e             lda   CelRy
+:c_e             jsr   HatRowSkip
+                 bcs   :salta
+                 lda   CelRy
                  bmi   :salta
                  cmp   RoomH
                  bcs   :tuttofuori
                  cmp   #ROOMROWS
                  bcs   :tuttofuori
-                 bra   :pronto
+                 lda   HatClip
+                 bne   :unoM
+                 brl   :pronto
 :salta           inc   CelRy
                  inc   CelRow
                  dec   RunNow
@@ -3870,6 +4619,61 @@ CelRunMask       lda   CelRow
                  adc   RunNow
                  sta   CelRow
                  rts
+
+* One pixel when HatClip (same reason as CelRunFast).
+:unoM            lda   CelRy
+                 sta   SoftY
+                 asl   a
+                 tax
+                 lda   RowOff,x
+                 clc
+                 adc   TmpW
+                 sta   PixOff
+                 lda   MaskRow,x
+                 clc
+                 adc   CelMcol
+                 sta   MskOff
+                 lda   Dispari
+                 bne   :unoMB
+                 ldy   MskOff
+                 lda   [zpMask],y
+                 and   CelMbit
+                 beq   :uAdraw
+                 lda   TvSoftMask           ; the common case is "masked pixel,
+                 beq   :uAav                ; skip it": no call for that
+                 jsr   TvMaskPunch
+                 bcs   :uAav
+:uAdraw          ldy   PixOff
+                 sep   #$20
+                 mx    %10
+                 lda   [zpPix],y
+                 and   #$0F
+                 ora   TmpW2
+                 sta   [zpPix],y
+                 rep   #$20
+                 mx    %00
+                 bra   :uAav
+:unoMB           ldy   MskOff
+                 lda   [zpMask],y
+                 and   CelMbit
+                 beq   :uBdraw
+                 lda   TvSoftMask
+                 beq   :uAav
+                 jsr   TvMaskPunch
+                 bcs   :uAav
+:uBdraw          ldy   PixOff
+                 sep   #$20
+                 mx    %10
+                 lda   [zpPix],y
+                 and   #$F0
+                 ora   CelColor
+                 sta   [zpPix],y
+                 rep   #$20
+                 mx    %00
+:uAav            inc   CelRy
+                 inc   CelRow
+                 dec   RunNow
+                 brl   :skip
 
 :pronto          lda   RoomH
                  cmp   #ROOMROWS
@@ -3886,6 +4690,7 @@ CelRunMask       lda   CelRow
                  lda   RunNow
 :vis             sta   CelVis
                  lda   CelRy
+                 sta   SoftY
                  asl   a
                  tax
                  lda   RowOff,x
@@ -3902,8 +4707,12 @@ CelRunMask       lda   CelRow
 :lpalto          ldy   MskOff
                  lda   [zpMask],y
                  and   CelMbit
-                 bne   :sa
-                 ldy   PixOff
+                 beq   :drawA
+                 lda   TvSoftMask
+                 beq   :sa
+                 jsr   TvMaskPunch
+                 bcs   :sa
+:drawA           ldy   PixOff
                  sep   #$20
                  mx    %10
                  lda   [zpPix],y
@@ -3920,6 +4729,7 @@ CelRunMask       lda   CelRow
                  clc
                  adc   MaskPitch
                  sta   MskOff
+                 inc   SoftY
                  dec   CelVis
                  bne   :lpalto
                  bra   :resto
@@ -3927,8 +4737,12 @@ CelRunMask       lda   CelRow
 :lpbasso         ldy   MskOff
                  lda   [zpMask],y
                  and   CelMbit
-                 bne   :sb
-                 ldy   PixOff
+                 beq   :drawB
+                 lda   TvSoftMask
+                 beq   :sb
+                 jsr   TvMaskPunch
+                 bcs   :sb
+:drawB           ldy   PixOff
                  sep   #$20
                  mx    %10
                  lda   [zpPix],y
@@ -3945,6 +4759,7 @@ CelRunMask       lda   CelRow
                  clc
                  adc   MaskPitch
                  sta   MskOff
+                 inc   SoftY
                  dec   CelVis
                  bne   :lpbasso
 
@@ -3957,7 +4772,9 @@ CelRunMask       lda   CelRow
 *=======================================================================
 * ResetVM - variables to zero, no script alive
 *=======================================================================
-ResetVM          ldx   #0
+ResetVM          lda   #$FFFF               ; no room's mask is cached yet
+                 sta   Masc0Room
+                 ldx   #0
                  lda   #0
 :var             sta   Vars,x
                  inx
@@ -3982,9 +4799,14 @@ ResetVM          ldx   #0
                  sta   ActCost,x
                  sta   ActX,x
                  sta   ActY,x
-                 sta   ActFace,x
+                 sta   ActElev,x
                  sta   ActFrame,x
                  sta   ActVis,x
+                 lda   #2                   ; facing 0 is left, not "unset"
+                 sta   ActFace,x
+                 lda   #$FFFF
+                 sta   ActBox,x
+                 lda   #0
                  inx
                  inx
                  cpx   #NACT*2
@@ -4021,9 +4843,16 @@ ResetVM          ldx   #0
                  stz   VerbHoverLast
                  stz   SentHotLast
                  stz   InvHotLast
+                 stz   HoverNow
                  stz   OvrPC
+                 stz   CutLiv
                  lda   #$FFFF
                  sta   TxtYCache
+                 lda   #80                  ; Zak's intro: the slow zoom and
+                 sta   Vars+VO_MACHSPD      ; the long dream both want > 40
+                 stz   CredVis
+                 stz   CutIface
+                 jsr   PalettaAttori
                  rts
 
 *=======================================================================
@@ -4268,7 +5097,11 @@ MsgTick          lda   MsgTimer
 *=======================================================================
 * SpegniMsg - throw away the sentence on screen
 *=======================================================================
+* TaciMsg - drop the line without StartAnim (ESC). SpegniMsg still
+* closes the mouth: Maniac room changes need that.
+TaciMsg          stz   ParlaOra
 SpegniMsg        jsr   SmettiParlare
+                 stz   MsgKeep
                  stz   MsgPag
                  stz   MsgTimer
                  stz   MsgDopo
@@ -4725,6 +5558,8 @@ NotaCam          pha
 SetCameraAt      sta   CamDest
                  sta   CamCur
                  stz   CamGo
+                 lda   #CAM_FERMA           ; stop following, or the office
+                 sta   CamMode              ; camera walks away with Zak
                  jsr   ClampCam
                  jmp   CamMoved
 
@@ -4828,8 +5663,9 @@ hAnimate         jsr   VOB1
                  sta   AnimArg
                  lda   ActNo
                  jsr   ActIndex
-                 bcs   :fine
-                 stx   ActIdx
+                 bcc   :okact
+                 brl   :fine
+:okact           stx   ActIdx
                  lda   AnimArg
                  and   #$0003
                  sta   AnimDir
@@ -4848,14 +5684,45 @@ hAnimate         jsr   VOB1
                  beq   :verso
                  cmp   #4                   ; turn slowly: same for now
                  beq   :verso
-                 lda   AnimChore
+                 lda   AnimChore            ; V2: the chore is anim>>2, as-is
+* Zak Melissa TV: animate 32 = chore 8. That turns L2 off and lights L6,
+* the 32x19 hood/visor cel ScummVM shows (not chore 9's small helmet).
                  jsr   StartAnim
                  bra   :fine
-:ferma           lda   #1
-                 jsr   StartAnim
+:ferma           ldx   ActIdx
+                 stz   ActMoving,x
+                 jsr   FermaPose
                  bra   :fine
-:verso           lda   AnimDir
+:verso           ldx   ActIdx
+                 stz   ActMoving,x
+* Zak Melissa on TV: chore 8 lights L6 (hood). Talking does StartAnim 4/5
+* and overwrites ActFrame, so we must not key off ActFrame — look at L6's
+* CostFrm. FermaPose would wipe the hood until the next animate 32.
+                 lda   IsZak
+                 beq   :vpose
+                 lda   ActCost,x
+                 and   #$00FF
+                 cmp   #3
+                 bne   :vpose
+                 lda   #6
+                 sta   LimbNo
+                 jsr   LimbOff              ; X = limb-6 slot
+                 lda   CostFrm,x
+                 cmp   #$FFFF
+                 beq   :vpose               ; hood not on
+                 lsr   a
+                 lsr   a
+                 cmp   #8
+                 bne   :vpose
+                 lda   AnimDir
                  jsr   SetFacing
+                 lda   #8
+                 jsr   StartAnim
+                 bra   :fine
+:vpose           ldx   ActIdx
+                 lda   AnimDir
+                 sta   ActFace,x
+                 jsr   FermaPose
 :fine            stz   Esito
                  rts
 
@@ -4883,7 +5750,17 @@ AnimActors       stz   ActIdx
                  bcc   :att
                  rts
 
-AnimUno          lda   ActCost,x            ; this costume's commands
+AnimUno          rep   #$30
+                 mx    %00
+                 ldx   ActIdx
+                 lda   ActMoving,x          ; leftover walk cycle: stand
+                 bne   :okcam
+                 lda   ActFrame,x
+                 bne   :okcam
+                 jsr   FermaPose
+                 rts
+:okcam           ldx   ActIdx
+                 lda   ActCost,x            ; this costume's commands
                  jsr   SlotCostume
                  bcs   :fine
                  jsr   BaseCostume
@@ -4984,7 +5861,12 @@ MoveUno          ldx   ActIdx
                  bne   :cammina
                  brl   ArrivatoQui
 
-:cammina         lda   WalkDX               ; the sign and the absolute value
+:cammina         ldx   ActIdx
+                 lda   ActX,x
+                 sta   BoxNx                ; before the step, for a revert
+                 lda   ActY,x
+                 sta   BoxNy
+                 lda   WalkDX               ; the sign and the absolute value
                  bpl   :xpos
                  lda   #$FFFF
                  sta   WalkSX
@@ -5057,7 +5939,72 @@ MoveUno          ldx   ActIdx
                  sta   ActX,x
 :versoy          anop
 
-:fatto           jmp   SegnaAttore
+* If this step landed in a walk box, that box is where he is now.
+* Zak: a Bresenham step through the air (window to the door, across
+* the facade) is not a walk. Try one axis, then the other; if both
+* leave the boxes, stay put and ask for another gate.
+* Do not zero BoxLockOk: the baker is put on window box 9 ($A0) and
+* walks (18,22)->(23,22) inside it. A step with lock=0 cannot see that
+* box, RimettiInBox snaps him onto the sidewalk, and the costume is
+* drawn down the facade.
+:fatto           lda   IsZak
+                 bne   :zakfatto
+                 jmp   SegnaAttore          ; MM: no box rewrite mid-step
+:zakfatto        jsr   LockSeInvis
+                 ldx   ActIdx
+                 lda   ActX,x
+                 sta   BoxQx
+                 lda   ActY,x
+                 sta   BoxQy
+                 jsr   CasellaDelPunto
+                 cmp   #$FFFF
+                 bne   :inbox
+* Floor walk (office pacing, stairs): a gap cell must not abort
+* the trip. ProssimaTappa with ActUltima=1 is :finita, waitForActor
+* returns at once, and object 671's 45<->74 loop only flips facing.
+                 lda   BoxLockOk
+                 beq   :resta
+                 lda   WalkAX
+                 beq   :soloy
+                 ldx   ActIdx
+                 lda   BoxNx
+                 clc
+                 adc   WalkSX
+                 sta   ActX,x
+                 lda   BoxNy
+                 sta   ActY,x
+                 sta   BoxQy
+                 lda   ActX,x
+                 sta   BoxQx
+                 jsr   CasellaDelPunto
+                 cmp   #$FFFF
+                 bne   :inbox
+:soloy           lda   WalkAY
+                 beq   :fuori
+                 ldx   ActIdx
+                 lda   BoxNx
+                 sta   ActX,x
+                 lda   BoxNy
+                 clc
+                 adc   WalkSY
+                 sta   ActY,x
+                 sta   BoxQy
+                 lda   ActX,x
+                 sta   BoxQx
+                 jsr   CasellaDelPunto
+                 cmp   #$FFFF
+                 bne   :inbox
+:fuori           ldx   ActIdx
+                 lda   BoxNx
+                 sta   ActX,x
+                 lda   BoxNy
+                 sta   ActY,x
+                 jsr   RimettiInBox
+                 jsr   ProssimaTappa
+                 jmp   SegnaAttore
+:inbox           ldx   ActIdx
+                 sta   ActBox,x
+:resta           jmp   SegnaAttore
 
 ArrivatoQui      ldx   ActIdx
                  lda   ActUltima,x          ; was it only a waypoint?
@@ -5072,8 +6019,7 @@ ArrivatoQui      ldx   ActIdx
                  stz   ActMoving,x
                  stz   ActErr,x
                  stz   ActUltima,x
-                 lda   #1                   ; standing still
-                 jsr   StartAnim
+                 jsr   FermaPose
                  rts
                  rts
 
@@ -5274,23 +6220,94 @@ DividiW          stz   DivR
 * DentroCasella - is the point (BoxQx,BoxQy) inside box A?
 *=======================================================================
 * Carry clear if it is.
-DentroCasella    jsr   CasellaN
+* A is the box number: must survive the IsZak test (pha). Without that,
+* Zak always probed box 1 and Annie never sat in the locked TV box.
+DentroCasella    pha
+                 lda   IsZak
+                 bne   :zak
+                 pla
+                 jsr   CasellaN
                  lda   BoxQy
                  cmp   BoxUy
-                 bcc   :no
+                 bcc   :nomm
                  lda   BoxLy
                  cmp   BoxQy
-                 bcc   :no
+                 bcc   :nomm
                  jsr   LatiACasella
                  lda   BoxQx
                  cmp   BoxSx
+                 bcc   :nomm
+                 lda   BoxDx
+                 cmp   BoxQx
+                 bcc   :nomm
+                 clc
+                 rts
+:nomm            sec
+                 rts
+:zak             pla
+                 jsr   CasellaN
+                 ldy   BoxPtr               ; bit 7 = invisible (TV / window).
+                 iny                        ; Locked ($40) still counts as
+                 iny                        ; inside: ScummVM only blocks
+                 iny                        ; walking *into* it (ProssimaTappa).
+                 iny
+                 iny
+                 iny
+                 iny
+                 lda   [zpRaw],y
+                 and   #$0080
+                 beq   :sbloccata
+                 lda   BoxLockOk            ; 0: skip locked (walk)
+                 beq   :no
+                 bra   :aperto              ; 1 or 2: locked matches
+:sbloccata       lda   BoxLockOk
+                 cmp   #2                   ; 2: only locked (Annie)
+                 beq   :no
+:aperto          anop
+                 lda   BoxQy                ; one cell of slack above and on
+                 inc   a                    ; the sides: the door, the card
+                 cmp   BoxUy                ; and the rug sit on the edge.
+                 bcc   :no                  ; No slack below: room 3 stairs
+                 lda   BoxLy                ; box0 (mask 3) must not keep the
+                 cmp   BoxQy                ; feet at y=Ly+1, or the doorway
+                 bcc   :no                  ; trails while walking down.
+                 jsr   LatiACasella
+                 lda   BoxQx
+                 inc   a
+                 cmp   BoxSx
                  bcc   :no
                  lda   BoxDx
+                 inc   a
                  cmp   BoxQx
                  bcc   :no
                  clc
                  rts
 :no              sec
+                 rts
+
+* If he is standing in a hole between boxes (Zak's desk), put him
+* back on the nearest walkable point so getDist is not forever > 2.
+RimettiInBox     ldx   ActIdx
+                 lda   ActX,x
+                 sta   BoxQx
+                 lda   ActY,x
+                 sta   BoxQy
+                 jsr   CasellaDelPunto
+                 cmp   #$FFFF
+                 beq   :fuori
+                 rts
+:fuori           jsr   AvvicinaPunto
+                 lda   BoxScelta
+                 cmp   #$FFFF
+                 bne   :ok
+                 rts
+:ok              ldx   ActIdx
+                 lda   BoxQx
+                 sta   ActX,x
+                 lda   BoxQy
+                 sta   ActY,x
+                 lda   BoxScelta
+                 sta   ActBox,x
                  rts
 
 *=======================================================================
@@ -5375,7 +6392,28 @@ AvvicinaPunto    lda   #$FFFF
                  lda   #$7FFF
                  sta   BoxBest
                  stz   BoxI
-:cerca           lda   BoxI
+:cerca           lda   IsZak
+                 beq   :misura              ; MM: every box, as before
+                 lda   BoxI
+                 jsr   CasellaN
+                 ldy   BoxPtr               ; bit 7: invisible (room 3 window,
+                 iny                        ; TV). Walking must not snap onto
+                 iny                        ; it: the matrix then flies down
+                 iny                        ; the facade instead of the stairs.
+                 iny                        ; Locked ($40) is fine to snap to;
+                 iny                        ; ProssimaTappa refuses to enter.
+                 iny
+                 iny
+                 lda   [zpRaw],y
+                 and   #$0080
+                 beq   :sbloccata
+                 lda   BoxLockOk
+                 beq   :prossima
+                 bra   :misura
+:sbloccata       lda   BoxLockOk
+                 cmp   #2
+                 beq   :prossima
+:misura          lda   BoxI
                  jsr   PuntoNellaCasella
                  jsr   DistanzaPunto
                  cmp   BoxBest
@@ -5418,6 +6456,42 @@ CasellaDelPunto  stz   BoxI
                  rts
 :trovata         lda   BoxI
                  rts
+
+* The box the actor occupies. Walk never assigns locked boxes.
+* In Zak a putActor onto a locked box (Annie / Melissa in the TV) must
+* keep that box, or they are drawn in front of the set. Maniac
+* only looks at walkable boxes.
+* Zak putActor can land one cell past a flat box (phone clerk at
+* (22,52) vs box 3 at y=50): ScummVM's adjustActorPos snaps onto the
+* nearest box so the mask keeps him behind the counter. Without that
+* ActBox stays $FFFF and he is drawn in front.
+AssegnaCasella   ldx   ActIdx
+                 lda   ActRoom,x
+                 cmp   CurRoom
+                 bne   :niente
+                 lda   NumBox
+                 beq   :niente
+                 lda   ActX,x
+                 sta   BoxQx
+                 lda   ActY,x
+                 sta   BoxQy
+                 lda   IsZak
+                 beq   :walk
+                 lda   #2
+                 sta   BoxLockOk
+                 jsr   CasellaDelPunto
+                 stz   BoxLockOk
+                 cmp   #$FFFF
+                 bne   :ok
+:walk            jsr   CasellaDelPunto
+:ok              ldx   ActIdx
+                 sta   ActBox,x
+                 cmp   #$FFFF
+                 bne   :niente
+                 lda   IsZak
+                 beq   :niente
+                 jsr   RimettiInBox
+:niente          rts
 
 *=======================================================================
 * ProssimaCasella - from BoxDa to BoxA, which box to cross next
@@ -5533,13 +6607,103 @@ AvviaCammino     lda   ActNo
 *=======================================================================
 * The destination has to be brought inside the walkable area, and we note
 * which box it landed in: the trip is made box by box.
-AvviaCamminoQui  anop
+* If he already stands on a locked/invisible box (putActor: baker in
+* the window, Annie in the TV), walking must keep that box. Snapping
+* it to the sidewalk sent the baker out of his box and made the room-3
+* matrix fly down the facade. Other walks still skip bit-7 boxes.
+LockSeInvis      stz   BoxLockOk
+                 ldx   ActIdx
+                 lda   ActBox,x
+                 cmp   #$FFFF
+                 beq   :no
+                 cmp   NumBox
+                 bcs   :no
+                 jsr   CasellaN
+                 lda   BoxPtr
+                 clc
+                 adc   #7
+                 tay
+                 lda   [zpRaw],y
+                 and   #$0080               ; invisible only (baker / TV)
+                 beq   :no
+                 lda   #1
+                 sta   BoxLockOk
+:no              rts
+
+AvviaCamminoQui  lda   IsZak
+                 bne   :zak
                  lda   ActArg
                  sta   BoxQx
                  lda   ActArg2
                  sta   BoxQy
                  jsr   AvvicinaPunto
                  ldx   ActIdx
+                 lda   BoxQx
+                 sta   ActFinX,x
+                 lda   BoxQy
+                 sta   ActFinY,x
+                 lda   BoxScelta
+                 sta   ActBoxFin,x
+                 lda   ActX,x
+                 sta   BoxQx
+                 lda   ActY,x
+                 sta   BoxQy
+                 jsr   CasellaDelPunto
+                 cmp   #$FFFF
+                 bne   :mmbox
+                 jsr   AvvicinaPunto
+                 lda   BoxScelta
+:mmbox           ldx   ActIdx
+                 sta   ActBox,x
+                 stz   ActUltima,x
+                 stz   ActErr,x
+                 lda   #1
+                 sta   ActMoving,x
+                 jsr   ProssimaTappa
+                 ldx   ActIdx
+                 lda   ActMoving,x
+                 beq   :mmfine
+                 lda   ActDstX,x
+                 cmp   ActX,x
+                 bne   :mmcam
+                 lda   ActDstY,x
+                 cmp   ActY,x
+                 bne   :mmcam
+                 jmp   ArrivatoQui
+:mmcam           jsr   VersoCammino
+                 lda   #0
+                 jsr   StartAnim
+:mmfine          rts
+:zak             jsr   LockSeInvis
+                 lda   ActArg
+                 sta   BoxQx
+                 lda   ActArg2
+                 sta   BoxQy
+                 jsr   AvvicinaPunto
+                 ldx   ActIdx
+                 lda   ActArg
+                 sec
+                 sbc   BoxQx
+                 bpl   :dax
+                 eor   #$FFFF
+                 inc   a
+:dax             sta   WalkAX
+                 lda   ActArg2
+                 sec
+                 sbc   BoxQy
+                 bpl   :day
+                 eor   #$FFFF
+                 inc   a
+:day             cmp   WalkAX
+                 bcs   :dmag
+                 lda   WalkAX
+:dmag            cmp   #2
+                 bcs   :usasnapp
+                 lda   ActArg
+                 sta   BoxQx
+                 lda   ActArg2
+                 sta   BoxQy
+:usasnapp        ldx   ActIdx
                  lda   BoxQx
                  sta   ActFinX,x
                  lda   BoxQy
@@ -5555,18 +6719,31 @@ AvviaCamminoQui  anop
                  cmp   #$FFFF
                  bne   :hocasella
                  jsr   AvvicinaPunto        ; outside them all: the nearest
+                 ldx   ActIdx               ; and stand on it, or every walk
+                 lda   BoxQx                ; from a gap (the desk in room 1)
+                 sta   ActX,x               ; starts and ends on the same
+                 lda   BoxQy                ; snapped point and never moves.
+                 sta   ActY,x
                  lda   BoxScelta
 :hocasella       ldx   ActIdx
                  sta   ActBox,x
                  stz   ActUltima,x
                  stz   ActErr,x
+                 stz   ActStuck,x
                  lda   #1
                  sta   ActMoving,x
                  jsr   ProssimaTappa
                  ldx   ActIdx
                  lda   ActMoving,x
                  beq   :fine
-                 jsr   VersoCammino
+                 lda   ActDstX,x            ; already there: do not start
+                 cmp   ActX,x               ; the walk cycle on the spot
+                 bne   :cammina
+                 lda   ActDstY,x
+                 cmp   ActY,x
+                 bne   :cammina
+                 jmp   ArrivatoQui
+:cammina         jsr   VersoCammino
                  lda   #0                   ; the walking frame
                  jsr   StartAnim
 :fine            rts
@@ -5578,25 +6755,109 @@ AvviaCamminoQui  anop
 * Otherwise ask the matrix which box to cross, find that box's point
 * nearest to where we are, and then bring it back onto the edge of the
 * box we are in: that edge point is the one to reach.
-ProssimaTappa    ldx   ActIdx
+ProssimaTappa    lda   IsZak
+                 beq   :mm
+                 brl   :zak
+:mm              ldx   ActIdx
+                 lda   ActUltima,x
+                 beq   :mmav
+                 brl   :finita
+:mmav            lda   ActBoxFin,x
+                 cmp   #$FFFF
+                 bne   :mmfinok
+                 brl   :dritto
+:mmfinok         cmp   ActBox,x
+                 bne   :mmpath
+                 brl   :dritto
+:mmpath          sta   BoxA
+                 lda   ActBox,x
+                 sta   BoxDa
+                 jsr   ProssimaCasella
+                 cmp   #$FFFF
+                 bne   :mmprox
+                 brl   :dritto
+:mmprox          sta   BoxProx
+                 ldx   ActIdx
+                 lda   ActX,x
+                 sta   BoxQx
+                 lda   ActY,x
+                 sta   BoxQy
+                 lda   BoxProx
+                 jsr   PuntoNellaCasella
+                 lda   BoxCx
+                 sta   BoxQx
+                 lda   BoxCy
+                 sta   BoxQy
+                 ldx   ActIdx
+                 lda   ActBox,x
+                 jsr   PuntoNellaCasella
+                 ldx   ActIdx
+                 lda   BoxCx
+                 sta   ActDstX,x
+                 lda   BoxCy
+                 sta   ActDstY,x
+                 lda   BoxProx              ; MM: already across, as before
+                 sta   ActBox,x
+                 stz   ActErr,x
+:mmctrl          ldx   ActIdx
+                 lda   ActDstX,x
+                 cmp   ActX,x
+                 beq   :mmy
+                 brl   :muovi
+:mmy             lda   ActDstY,x
+                 cmp   ActY,x
+                 beq   :mmult
+                 brl   :muovi
+:mmult           lda   ActUltima,x
+                 beq   :mmagain
+                 brl   :finita
+:mmagain         brl   :dritto
+:zak             ldx   ActIdx
+                 lda   ActBox,x
+                 cmp   #$FFFF
+                 bne   :c_box
+                 jsr   RimettiInBox
+:c_box           ldx   ActIdx
                  lda   ActUltima,x
                  beq   :avanti
                  brl   :finita
 :avanti          lda   ActBoxFin,x
                  cmp   #$FFFF
-                 beq   :dritto
-                 cmp   ActBox,x
-                 beq   :dritto
-
-                 sta   BoxA
+                 bne   :finok
+                 brl   :dritto
+:finok           cmp   ActBox,x
+                 bne   :path
+                 brl   :dritto
+:path            sta   BoxA
                  lda   ActBox,x
                  sta   BoxDa
                  jsr   ProssimaCasella
                  cmp   #$FFFF
-                 beq   :dritto
-                 sta   BoxProx
-
-                 ldx   ActIdx               ; the point of the next
+                 bne   :c_prox
+                 brl   :dritto              ; no matrix: walk straight
+:c_prox          sta   BoxProx
+* ScummVM Actor_v2: cannot walk into a kBoxLocked ($40) box
+* (phone-company counter door = room 4 box 2). Stop here.
+                 jsr   CasellaN
+                 lda   BoxPtr
+                 clc
+                 adc   #7
+                 tay
+                 lda   [zpRaw],y
+                 and   #$0040
+                 beq   :okprox
+                 ldx   ActIdx               ; stop at the gate, do not enter
+                 stz   ActMoving,x
+                 stz   ActUltima,x
+                 stz   ActErr,x
+                 jsr   FermaPose
+                 rts
+:okprox          ldx   ActIdx
+                 lda   BoxProx
+                 cmp   ActBox,x             ; "stay in this box": go to
+                 bne   :gate                ; the goal, do not spin here
+                 brl   :dritto
+:gate            ldx   ActIdx               ; the point of the next
                  lda   ActX,x               ; box nearest to us
                  sta   BoxQx
                  lda   ActY,x
@@ -5615,7 +6876,7 @@ ProssimaTappa    ldx   ActIdx
                  sta   ActDstX,x
                  lda   BoxCy
                  sta   ActDstY,x
-                 lda   BoxProx              ; once there, we will be across
+                 lda   BoxProx              ; already in the next box, as MM
                  sta   ActBox,x
                  stz   ActErr,x
                  bra   :controlla
@@ -5638,7 +6899,7 @@ ProssimaTappa    ldx   ActIdx
                  bne   :muovi
                  lda   ActUltima,x
                  bne   :finita
-                 jmp   ProssimaTappa        ; waypoint already reached: on
+                 brl   :dritto
 :finita          ldx   ActIdx
                  stz   ActMoving,x
                  rts
@@ -5649,12 +6910,24 @@ ProssimaTappa    ldx   ActIdx
 *=======================================================================
 * hWaitActor ($3B) - wait until he has finished walking
 *=======================================================================
+* ActDst is the current gate, not the walk point. Script 2 calls this
+* every frame, and MainLoop runs scripts BEFORE MoveActors. The frame
+* he steps onto a gate, dest==pos but ProssimaTappa has not run yet:
+* treating that as "arrived" stopped him in the bedroom one box short
+* of the door (30,55 instead of 35,56). Wait on ActMoving only.
 hWaitActor       jsr   VOB1
                  jsr   ActIndex
                  bcs   :libero
                  lda   ActMoving,x
                  beq   :libero
-                 dec   PC                   ; put the opcode back and
+                 lda   IsZak
+                 beq   :aspetta
+                 lda   ActRoom,x            ; Zak: left the room, he is done
+                 cmp   CurRoom
+                 beq   :aspetta
+                 stz   ActMoving,x
+                 bra   :libero
+:aspetta         dec   PC                   ; put the opcode back and
                  dec   PC                   ; yield again
                  lda   #CEDI
                  sta   Esito
@@ -5700,31 +6973,50 @@ hGetActY         jsr   FetchB
 * makes no sense. If that line is recognised, ours goes in its place,
 * keeping the names of whoever wrote it.
 RiscriviCred     ldx   #0
-:cerca           lda   MsgText,x            ; look for the three letters
-                 and   #$00FF
+:cerca           lda   MsgText,x            ; last letter of a word has $80
+                 and   #$007F
                  cmp   #'I'
                  bne   :avanti
                  lda   MsgText+1,x
-                 and   #$00FF
+                 and   #$007F
                  cmp   #'B'
                  bne   :avanti
                  lda   MsgText+2,x
-                 and   #$00FF
+                 and   #$007F
                  cmp   #'M'
-                 beq   :trovato
+                 beq   :ibm
 :avanti          inx
                  cpx   #MSGMAX-3
                  bcc   :cerca
+                 ldx   #0
+:cerca2          lda   MsgText,x            ; only the music names
+                 and   #$007F               ; ("... Hayes, & Dave Warhol")
+                 cmp   #'H'                 ; "Kane" also sits on the
+                 bne   :av2                 ; design and program lines
+                 lda   MsgText+1,x
+                 and   #$007F
+                 cmp   #'a'
+                 bne   :av2
+                 lda   MsgText+2,x
+                 and   #$007F
+                 cmp   #'y'
+                 beq   :nomi
+:av2             inx
+                 cpx   #MSGMAX-3
+                 bcc   :cerca2
                  rts
 
-:trovato         lda   #MsgIIGS             ; my own line first, on its own
+:ibm             lda   #MsgIIGS
                  sta   zpStr
                  lda   #^MsgIIGS
                  sta   zpStr+2
-                 jsr   CopiaMsg
-                 lda   #MsgMusica           ; then the music one
-                 sta   MsgDopo
-                 rts
+                 jmp   CopiaMsg
+
+:nomi            lda   #MsgMusica
+                 sta   zpStr
+                 lda   #^MsgMusica
+                 sta   zpStr+2
+                 jmp   CopiaMsg
 
 *=======================================================================
 * CopiaMsg - bring the string zpStr points at into MsgText
@@ -5755,7 +7047,9 @@ CopiaMsg         ldy   #0
 ATTW             =     80
 ATTH             =     96
 
-RidisegnaAttori  lda   RoomH
+RidisegnaAttori  rep   #$30
+                 mx    %00
+                 lda   RoomH
                  bne   :c_e
                  rts
 :c_e             lda   ActDirty
@@ -6034,8 +7328,9 @@ AttoreInScena    ldx   ActIdx
 * The box to clean is the one measured the last time the actor was
 * drawn: exact by construction. If it is empty nothing was drawn, so
 * there is nothing to erase.
-SPRW             =     176
-SPRH             =     120
+SPRW             =     88             ; the whole body, not just the feet
+SPRH             =     120            ; a 176-wide box redrew the room
+*                                     ; and the pointer blinked
 
 ScatolaVecchia   ldx   ActIdx
                  lda   ActBX2,x
@@ -6044,18 +7339,21 @@ ScatolaVecchia   ldx   ActIdx
                  beq   :grande
                  bmi   :grande
                  sta   BlkW
+                 cmp   #200                 ; a bad limb must not dirty
+                 bcs   :grande              ; the whole room
                  lda   ActBY2,x
                  sec
                  sbc   ActBY1,x
                  beq   :grande
                  bmi   :grande
                  sta   BlkH
+                 cmp   #200
+                 bcs   :grande
                  lda   ActBX1,x
                  sta   DstX
                  lda   ActBY1,x
                  sta   DstY
-                 clc
-                 rts
+                 jmp   GonfiaScatola
 
 :grande          jmp   ScatolaPiedi
 :vuota           sec
@@ -6067,7 +7365,7 @@ ScatolaPiedi     ldx   ActIdx
                  asl   a
                  asl   a
                  sec
-                 sbc   #72
+                 sbc   #40
                  bpl   :sx
                  lda   #0
 :sx              and   #$FFFC
@@ -6085,8 +7383,16 @@ ScatolaPiedi     ldx   ActIdx
                  ldx   ActIdx
                  lda   ActY,x
                  asl   a
+                 pha
+                 lda   IsZak
+                 beq   :noelev
+                 pla
                  sec
-                 sbc   #100
+                 sbc   ActElev,x            ; he may be in the air
+                 pha
+:noelev          pla
+                 sec
+                 sbc   #104
                  bpl   :su
                  lda   #0
 :su              sta   DstY
@@ -6108,6 +7414,58 @@ ScatolaPiedi     ldx   ActIdx
 :vuota           sec
                  rts
 
+* A walk step is eight pixels, and the next frame's arm sticks out
+* past the box we measured. Grow it or the old picture stays behind.
+GonfiaScatola    lda   DstX
+                 sec
+                 sbc   #8
+                 bpl   :sx
+                 lda   #0
+:sx              and   #$FFFC
+                 sta   DstX
+                 lda   BlkW
+                 clc
+                 adc   #16
+                 sta   BlkW
+                 lda   DstX
+                 clc
+                 adc   BlkW
+                 cmp   RoomW
+                 bcc   :dxok
+                 lda   RoomW
+                 sec
+                 sbc   DstX
+                 sta   BlkW
+:dxok            lda   DstY
+                 sec
+                 sbc   #8
+                 bpl   :su
+                 lda   #0
+:su              sta   DstY
+                 lda   BlkH
+                 clc
+                 adc   #16
+                 sta   BlkH
+                 lda   DstY
+                 clc
+                 adc   BlkH
+                 cmp   #ROOMROWS
+                 bcc   :ok
+                 lda   #ROOMROWS
+                 sec
+                 sbc   DstY
+                 sta   BlkH
+:ok              lda   BlkW
+                 beq   :vuota
+                 bmi   :vuota
+                 lda   BlkH
+                 beq   :vuota
+                 bmi   :vuota
+                 clc
+                 rts
+:vuota           sec
+                 rts
+
 *=======================================================================
 * hCutscene ($40) / hEndCut ($C0)
 *=======================================================================
@@ -6118,7 +7476,12 @@ ScatolaPiedi     ldx   ActIdx
 * the cursor - is put aside so that endCutscene can restore it. Without
 * the room, the disk screen never came back: it sat there with room 50
 * still on it.
-hCutscene        lda   Vars+VO_CURSOR
+hCutscene        lda   IsZak
+                 beq   :mm
+                 inc   CutLiv
+                 lda   UserIface
+                 sta   CutIface
+:mm              lda   Vars+VO_CURSOR
                  sta   CutCursor
                  lda   CurRoom
                  sta   CutRoom
@@ -6132,7 +7495,12 @@ hCutscene        lda   Vars+VO_CURSOR
                  stz   Esito
                  rts
 
-hEndCut          stz   OvrPC
+hEndCut          lda   IsZak
+                 beq   :gia
+                 lda   CutLiv
+                 beq   :gia
+                 dec   CutLiv
+:gia             stz   OvrPC
                  lda   CutCam
                  sta   CamMode
                  cmp   #CAM_SEGUI
@@ -6149,19 +7517,26 @@ hEndCut          stz   OvrPC
                  bcc   :ok
                  lda   #3
 :ok              sta   Vars+VO_CURSOR
-                 lda   #1
+                 lda   IsZak
+                 beq   :nienteui
+                 lda   CutIface
+                 bne   :iface
+                 lda   #$00E0
+:iface           sta   UserIface
+:nienteui        lda   #1
                  sta   Redraw
                  sta   PanDirty
                  sta   VerbsDirty
 * On entering the disk screen the game deletes the verb panel to make
 * room for the list of saved games, and on the way out it does not
 * rebuild it: in the original interpreter the "user state" handling took
-* care of that, and I have none. So script 164 is started again, which is
-* exactly the one the game uses to rebuild its fifteen commands.
+* care of that, and I have none. ScrVerbi is 164 (Maniac) or 19 (Zak).
+* Zak room 50's exit also starts 19; starting it here covers Cancel paths
+* where the camera was already following and FollowCamera left via ego.
                  lda   DiscoAperto
                  beq   :niente
                  stz   DiscoAperto
-                 lda   #SCR_VERBI
+                 lda   ScrVerbi
                  jsr   StartScript
 :niente          stz   Esito
                  rts
@@ -6175,7 +7550,8 @@ hEndCut          stz   OvrPC
 * flow. So it is stepped over (one opcode byte plus the displacement
 * word). Without this the whole live part of the script is skipped - the
 * choice of the kids, for instance.
-hOverride        lda   PC
+hOverride        stz   Vars+VO_OVERRIDE     ; not skipped, until ESC
+                 lda   PC
                  sta   OvrPC
                  lda   CurSlot
                  sta   OvrSlot
@@ -6781,7 +8157,30 @@ hActorOps        jsr   VOB1
                  sta   ActSub
                  cmp   #2
                  bne   :noncolore
-                 jsr   FetchB               ; Color carries one extra byte
+                 jsr   FetchB               ; Color(index, colour)
+                 sta   ActArg2
+                 lda   ActNo
+                 jsr   ActIndex
+                 bcc   :colok
+                 brl   :fine
+:colok           stx   ActIdx
+                 lda   ActArg2              ; Color(index, colour): index
+                 and   #$000F               ; is the extra byte, colour is
+                 sta   TmpW                 ; PARAM_2 (same as ScummVM)
+                 txa
+                 asl   a
+                 asl   a
+                 asl   a                    ; actor*16
+                 clc
+                 adc   TmpW
+                 tax
+                 sep   #$20
+                 mx    %10
+                 lda   ActArg
+                 sta   ActPal,x
+                 rep   #$20
+                 mx    %00
+                 jsr   SegnaAttore
                  brl   :fine
 :noncolore       cmp   #3
                  bne   :costume
@@ -6828,16 +8227,27 @@ hActorOps        jsr   VOB1
                  sta   ActName,x
                  rep   #$20
                  mx    %00
-                 bra   :fine
+                 brl   :fine
 :saltanome       jsr   SkipStrZero
-                 bra   :fine
+                 brl   :fine
 :costume         cmp   #4
-                 bne   :voce
-                 lda   ActNo                ; it is the costume: note it
+                 beq   :costc_e
+                 brl   :voce
+:costc_e         lda   ActNo                ; it is the costume: note it
                  jsr   ActIndex
-                 bcs   :fine
-                 lda   ActArg
+                 bcc   :costidx
+                 brl   :fine
+:costidx         lda   ActArg
                  sta   ActCost,x
+                 stx   ActIdx
+                 jsr   ResetLimbs           ; old chore must not keep its
+                 ldx   ActIdx               ; limbs: costume 31 leftovers
+                 phx                        ; on 17 painted a strip in the door
+                 jsr   ResetPalUno          ; V2: a new costume resets 0..15
+                 lda   IsZak
+                 beq   :costx
+                 jsr   ApplicaPalCost
+:costx           plx
                  stz   ActVis,x             ; has to be reassembled
                  jsr   MostraUno
                  bra   :fine
@@ -7062,11 +8472,22 @@ hPutActor        jsr   VOB1
                  lda   ActNo
                  jsr   ActIndex
                  bcs   :fine
+                 stx   ActIdx
                  lda   ActArg
                  sta   ActX,x
                  lda   ActArg2
                  sta   ActY,x
-                 jsr   MostraUno
+                 lda   IsZak
+                 beq   :mostra
+                 lda   ActMoving,x          ; putActor stops a walk: the
+                 beq   :giafermo            ; cycle has to stand too, or
+                 stz   ActMoving,x          ; he keeps marching in place
+                 jsr   FermaPose
+                 bra   :messo
+:giafermo        stz   ActMoving,x
+:messo           stz   ActElev,x
+                 jsr   AssegnaCasella
+:mostra          jsr   MostraUno
                  lda   ActNo                ; if it is here, redraw it
                  jsr   ActIndex
                  bcs   :fine
@@ -7476,9 +8897,24 @@ ColoreVoce       sta   ChiParla
 *=======================================================================
 * Bit 7 of a byte ends a word (a space follows), values below eight are
 * control codes, and from four up the code carries another byte with it.
-* Code 1 is the line break. '^' is not a terminator: V2's EGA font drew
-* three dots in that slot (Dave's opening "...."), so we expand it here.
+* Code 1 is the line break. '^' is not a terminator: V2's EGA font draws
+* an ellipsis in that slot, one character wide (Dave's opening "....").
+* Code 2 keeps the text: the next print carries on after it, as Zak's
+* "Later that night, Zak's in bed... alone... again." is built.
 CatchStr         stz   MsgLen
+                 stz   MsgDa
+                 lda   MsgKeep
+                 beq   :lp
+                 stz   MsgKeep
+                 ldx   #0
+:coda            lda   MsgText,x
+                 and   #$00FF
+                 beq   :incoda
+                 inx
+                 cpx   #MSGMAX
+                 bcc   :coda
+:incoda          stx   MsgLen
+                 stx   MsgDa
 :lp              jsr   FetchB
                  beq   :fine
                  sta   ChTmp
@@ -7491,7 +8927,12 @@ CatchStr         stz   MsgLen
                  lda   #$000A               ; 1: line break
                  jsr   PushMsg
                  bra   :noacapo
-:noncapo         cmp   #3
+:noncapo         cmp   #2
+                 bne   :noncont
+                 lda   #1                   ; 2: the next print goes on from here
+                 sta   MsgKeep
+                 bra   :noacapo
+:noncont         cmp   #3
                  bne   :noacapo
                  lda   #$0001               ; 3: the sentence pauses here and
                  jsr   PushMsg              ; wait; the rest is another
@@ -7502,20 +8943,16 @@ CatchStr         stz   MsgLen
                  jsr   FetchB
                  bra   :spazio
 
-:stampabile      cmp   #'^'
-                 bne   :unchar
-                 lda   #'.'
-                 jsr   PushMsg
-                 lda   #'.'
-                 jsr   PushMsg
-                 lda   #'.'
-                 jsr   PushMsg
-                 bra   :spazio
-:unchar          jsr   PushMsg
+:stampabile      jsr   PushMsg
 :spazio          lda   ChTmp
                  and   #$0080
                  beq   :lp
-                 lda   #' '
+                 ldy   PC                   ; bit 7 is "space follows",
+                 lda   [zpCode],y           ; except before a control code
+                 and   #$007F               ; or the end of the string:
+                 cmp   #8                   ; that extra space made Annie's
+                 bcc   :lp                  ; TV lines 41 characters and
+                 lda   #' '                 ; they ran off the screen.
                  jsr   PushMsg
                  bra   :lp
 
@@ -7546,8 +8983,10 @@ CatchStr         stz   MsgLen
 * How long it stays on screen, as in the game: it depends on the length.
 * Without this delay the next message wipes it instantly, which is why a
 * kid's description could only be read by holding the button down.
+                 lda   MsgDa                ; carrying on: same page
+                 bne   :stessapag
                  stz   MsgPag               ; start from the first page
-                 lda   MsgDopo              ; if another follows, this one
+:stessapag       lda   MsgDopo              ; if another follows, this one
                  beq   :normale             ; has to make room for them
                  lda   #235
                  bra   :messo
@@ -7560,9 +8999,11 @@ CatchStr         stz   MsgLen
 * wait until a sentence has reached a given point. Without it, the
 * opening dialogue script waits for ever - which is why choosing Bernard
 * left the verb panel empty.
-                 lda   Vars+VO_CHARCNT
+                 lda   MsgLen
+                 sec
+                 sbc   MsgDa
                  clc
-                 adc   MsgLen
+                 adc   Vars+VO_CHARCNT
                  sta   Vars+VO_CHARCNT
                  rts
 
@@ -8048,7 +9489,9 @@ LeggiObj         lda   #28                  ; the first table holds the
                  tay
                  lda   [zpRaw],y
                  sta   ObjImgOff
-                 beq   :no
+                 bne   :hasimg
+                 brl   :esci
+:hasimg          anop
 
 * A hundred and seventy-one objects in the game have no picture of their
 * own: the easel and the crate in the studio, the stairs, the things
@@ -8062,7 +9505,9 @@ LeggiObj         lda   #28                  ; the first table holds the
                  jsr   ConfineImmagini
                  lda   ObjImgOff
                  cmp   ObjConfine
-                 bcs   :no
+                 bcc   :inconfine
+                 brl   :esci
+:inconfine       anop
 
                  lda   ObjCd
                  clc
@@ -8094,32 +9539,165 @@ LeggiObj         lda   #28                  ; the first table holds the
                  asl   a
                  asl   a
                  sta   BlkW
-                 beq   :no
-                 lda   ObjCd
+                 bne   :hasw
+                 brl   :esci
+:hasw            lda   ObjCd
                  clc
                  adc   #13
                  tay
                  lda   [zpRaw],y
                  and   #$00F8
                  sta   BlkH
-                 beq   :no
+                 bne   :hash
+                 brl   :esci
+:hash            anop
+
+* Room 3 stairs (#134) shares door #135's OBIM but claims 56x80; decoding
+* that many strips runs off the real 48x64 phone-office image and paints
+* garbage (looks like an "exploded" Zak) into the apartment doorway. The
+* stairs are already in the room background — #134 is hotspot-only.
+* Belt: explicit Zak room-3 id 134 skip, then ImgGemella for any twin.
+                 lda   IsZak
+                 beq   :gemcheck
+                 lda   CurRoom
+                 cmp   #3
+                 bne   :gemcheck
+                 lda   ObjCd
+                 clc
+                 adc   #4
+                 tay
+                 lda   [zpRaw],y            ; object id (byte)
+                 and   #$00FF
+                 cmp   #134
+                 beq   :skip134
+* Oversized twin of the phone-office door OBIM in the doorway strip:
+* even if the id byte were wrong, BlkH 80 at x≈304 is the spray.
+                 lda   BlkH
+                 cmp   #72
+                 bcc   :gemcheck
+                 lda   DstX
+                 cmp   #300
+                 bcc   :gemcheck
+                 cmp   #370
+                 bcs   :gemcheck
+:skip134         brl   :esci
+:gemcheck        jsr   ImgGemella
+                 bcc   :gemok
+                 brl   :esci
+:gemok           anop
 
                  lda   DstX                 ; has to fit inside
                  clc
                  adc   BlkW
                  cmp   RoomW
                  beq   :altezza
-                 bcs   :no
+                 bcc   :altezza
+                 brl   :esci
 :altezza         lda   DstY
                  clc
                  adc   BlkH
                  cmp   RoomH
                  beq   :ok
-                 bcs   :no
+                 bcc   :ok
+                 brl   :esci
 :ok              clc
                  rts
-:no              sec
+:esci            sec
                  rts
+
+*=======================================================================
+* ImgGemella - carry set if ObjImgOff is a smaller sibling's picture
+*=======================================================================
+* Same picture offset and a strictly smaller w*h: sibling owns the bitmap.
+* Also if they are strictly narrower OR shorter (oversized hotspot twin).
+ImgGemella       lda   BlkW
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 sta   ImgOurW
+                 lda   BlkH
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 sta   ImgOurH
+                 lda   ImgOurW
+                 sta   CalcA
+                 lda   ImgOurH
+                 sta   CalcB
+                 jsr   Mul8
+                 sta   ImgArea
+                 ldy   #20
+                 lda   [zpRaw],y
+                 and   #$00FF
+                 asl   a
+                 sta   ConfN
+                 beq   :libera
+                 stz   ConfI
+:lp              lda   ConfI
+                 cmp   ObjIdx
+                 beq   :next
+                 lda   #28
+                 clc
+                 adc   ConfI
+                 tay
+                 lda   [zpRaw],y
+                 cmp   ObjImgOff
+                 bne   :next
+                 lda   #28
+                 clc
+                 adc   ConfN
+                 adc   ConfI
+                 tay
+                 lda   [zpRaw],y
+                 beq   :next
+                 sta   TmpW
+                 clc
+                 adc   #9
+                 tay
+                 lda   [zpRaw],y
+                 and   #$00FF
+                 sta   CalcA
+                 lda   TmpW
+                 clc
+                 adc   #13
+                 tay
+                 lda   [zpRaw],y
+                 and   #$00F8
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 sta   CalcB
+                 lda   CalcA
+                 cmp   ImgOurW
+                 bcc   :gemella             ; they narrower
+                 lda   CalcB
+                 cmp   ImgOurH
+                 bcc   :gemella             ; they shorter
+                 jsr   Mul8
+                 cmp   ImgArea
+                 bcc   :gemella             ; they smaller area
+:next            lda   ConfI
+                 clc
+                 adc   #2
+                 sta   ConfI
+                 cmp   ConfN
+                 bcc   :lp
+:libera          clc
+                 rts
+:gemella         sec
+                 rts
+
+* CalcA * CalcB -> A (8-bit factors, product fits in 16 bits for objects)
+Mul8             lda   CalcA
+                 sta   TmpW
+                 lda   #0
+                 ldx   CalcB
+                 beq   :z
+:m               clc
+                 adc   TmpW
+                 dex
+                 bne   :m
+:z               rts
 
 *=======================================================================
 * PuliscoRett - put the clean background back where the object is
@@ -8248,14 +9826,22 @@ AggiornaOggetto  lda   RoomH
                  adc   BlkH
                  sta   AggB
 
+* The masks in that square are stale too: put the room's own plane back
+* there and let RidisegnaRett stamp the lit objects' masks over it. This
+* used to be a DaComporre, that is a whole-room compose - copying the
+* 51200 bytes of the picture and decoding the whole mask again for one
+* button lighting up. In the aliens' room that was 79% of the time.
+                 lda   #1
+                 sta   MascRett
+                 jsr   BaseMascRett
                  jsr   RidisegnaRett
+                 stz   MascRett
 * There may be a character under that object: putting the background
 * back has just erased his legs. Flagging the actors as needing a redraw
 * makes the next frame draw them again and put them right.
                  lda   #1
                  sta   ActDirty
                  sta   ActTutti
-                 sta   DaComporre           ; and the masks are no longer right
 
                  lda   AggX                 ; what goes to the screen is that
                  sta   DstX                 ; piece, not the last object
@@ -8332,24 +9918,26 @@ RidisegnaRett    lda   Vars+VO_LIGHTS
 
                  lda   DstX                 ; do they touch?
                  cmp   AggR
-                 bcs   :prossimo
-                 lda   DstX
+                 bcc   :xok1
+                 brl   :prossimo
+:xok1            lda   DstX
                  clc
                  adc   BlkW
                  cmp   AggX
-                 beq   :prossimo
-                 bcc   :prossimo
+                 beq   :prossl
+                 bcc   :prossl
                  lda   DstY
                  cmp   AggB
-                 bcs   :prossimo
+                 bcs   :prossl
                  lda   DstY
                  clc
                  adc   BlkH
                  cmp   AggY
-                 beq   :prossimo
-                 bcc   :prossimo
-
-                 lda   ObjImgOff
+                 beq   :prossl
+                 bcc   :prossl
+                 bra   :tocca
+:prossl          brl   :prossimo
+:tocca           lda   ObjImgOff
                  sta   SrcOff
                  lda   DstX
                  cmp   AggX
@@ -8381,8 +9969,17 @@ RidisegnaRett    lda   Vars+VO_LIGHTS
                  sta   ClipY2
                  lda   #1
                  sta   ClipOn
-:decod           jsr   DecodeRLE
-                 stz   ClipOn
+:decod           jsr   PrepSkipCloud8
+                 jsr   DecodeRLE
+                 stz   SkipCloud8
+* DecodeRLE always runs the whole stream (clipping only drops the stores),
+* so SrcIdx is where this object's own mask begins. Clipping does not
+* apply to the plane: stamping the object's whole mask is what the full
+* compose did anyway, and it is the same bytes every time.
+                 lda   MascRett
+                 beq   :nomasc
+                 jsr   DecodeMaschera
+:nomasc          stz   ClipOn
 
 :prossimo        lda   AggIdx
                  sec
@@ -8395,56 +9992,141 @@ RidisegnaRett    lda   Vars+VO_LIGHTS
 *=======================================================================
 * SegnaRett - mark that only this piece needs blitting to the screen
 *=======================================================================
-* If there is one already, both are kept by taking the rectangle that
-* contains them: they are always few and close, so the count stays one.
+* Up to four rectangles. Two people talking at opposite ends of the
+* room used to become one strip the width of the screen, and the pointer
+* blinked on every mouth frame. Distant boxes stay apart; only those
+* that touch (or nearly) are merged.
+NDIRTYMAX        =     4
+MARGINE          =     0              ; merge only if the boxes really touch
+
 SegnaRett        lda   Redraw
                  cmp   #1
-                 beq   :fine                ; a full redraw is already due
-                 cmp   #2
-                 beq   :unisci
-
+                 bne   :c_e
+                 rts
+:c_e             cmp   #2
+                 beq   :gia
                  lda   DstX
-                 sta   DirtyX
+                 sta   DirtyXs
                  lda   DstY
-                 sta   DirtyY
+                 sta   DirtyYs
                  lda   DstX
                  clc
                  adc   BlkW
-                 sta   DirtyR
+                 sta   DirtyRs
                  lda   DstY
                  clc
                  adc   BlkH
-                 sta   DirtyB
+                 sta   DirtyBs
+                 lda   #1
+                 sta   DirtyN
                  lda   #2
                  sta   Redraw
                  rts
 
-:unisci          lda   DstX
-                 cmp   DirtyX
-                 bcs   :noleft
-                 sta   DirtyX
-:noleft          lda   DstY
-                 cmp   DirtyY
-                 bcs   :notop
-                 sta   DirtyY
-:notop           lda   DstX
+:gia             stz   DirtyI
+:prova           ldx   DirtyI
+                 lda   DirtyRs,x
+                 clc
+                 adc   #MARGINE
+                 cmp   DstX
+                 bcc   :no
+                 lda   DstX
                  clc
                  adc   BlkW
-                 cmp   DirtyR
-                 bcc   :noright
-                 sta   DirtyR
-:noright         lda   DstY
+                 clc
+                 adc   #MARGINE
+                 cmp   DirtyXs,x
+                 bcc   :no
+                 lda   DirtyBs,x
+                 clc
+                 adc   #MARGINE
+                 cmp   DstY
+                 bcc   :no
+                 lda   DstY
                  clc
                  adc   BlkH
-                 cmp   DirtyB
-                 bcc   :fine
-                 sta   DirtyB
-:fine            rts
+                 clc
+                 adc   #MARGINE
+                 cmp   DirtyYs,x
+                 bcc   :no
+                 brl   UniInX
+:no              lda   DirtyI
+                 clc
+                 adc   #2
+                 sta   DirtyI
+                 lda   DirtyN
+                 asl   a
+                 cmp   DirtyI
+                 bne   :prova
+                 lda   DirtyN
+                 cmp   #NDIRTYMAX
+                 bcs   :forza
+                 asl   a
+                 tax
+                 lda   DstX
+                 sta   DirtyXs,x
+                 lda   DstY
+                 sta   DirtyYs,x
+                 lda   DstX
+                 clc
+                 adc   BlkW
+                 sta   DirtyRs,x
+                 lda   DstY
+                 clc
+                 adc   BlkH
+                 sta   DirtyBs,x
+                 inc   DirtyN
+                 rts
+:forza           ldx   #0
+UniInX           lda   DstX
+                 cmp   DirtyXs,x
+                 bcs   :nl
+                 sta   DirtyXs,x
+:nl              lda   DstY
+                 cmp   DirtyYs,x
+                 bcs   :nt
+                 sta   DirtyYs,x
+:nt              lda   DstX
+                 clc
+                 adc   BlkW
+                 cmp   DirtyRs,x
+                 bcc   :nr
+                 sta   DirtyRs,x
+:nr              lda   DstY
+                 clc
+                 adc   BlkH
+                 cmp   DirtyBs,x
+                 bcc   :nf
+                 sta   DirtyBs,x
+:nf              rts
 
 *=======================================================================
-* BlitRett - blit only the marked rectangle to the screen
+* BlitRett - blit only the marked rectangle(s) to the screen
 *=======================================================================
-BlitRett         jsr   SottoIlPuntatore
+BlitRett         lda   DirtyN
+                 beq   :fine
+                 stz   DirtyI
+:lp              ldx   DirtyI
+                 lda   DirtyXs,x
+                 sta   DirtyX
+                 lda   DirtyYs,x
+                 sta   DirtyY
+                 lda   DirtyRs,x
+                 sta   DirtyR
+                 lda   DirtyBs,x
+                 sta   DirtyB
+                 jsr   BlitUno
+                 lda   DirtyI
+                 clc
+                 adc   #2
+                 sta   DirtyI
+                 lda   DirtyN
+                 asl   a
+                 cmp   DirtyI
+                 bne   :lp
+:fine            rts
+
+BlitUno          jsr   SottoIlPuntatore
                  bcc   :libero
                  _HideCursor
                  jsr   BlitRettReal
@@ -8600,8 +10282,7 @@ DrawRoomReal     lda   RoomH
                  bne   :c_e
                  lda   ScrollX
                  sta   ScrollDis
-                 jsr   ClearScreen
-                 rts
+                 rts                        ; room 0: keep the last picture
 
 :c_e             jsr   PreparaBuio
                  lda   ScrollX
@@ -8919,8 +10600,44 @@ hDrawObject      jsr   VOW1
                  lda   DrawObj
                  sta   ObjFound
                  jsr   TrovaOggetto
+                 bcc   :ce
+                 brl   :fine
+:ce              lda   DrawX                ; 255: leave it where it is
+                 cmp   #255
+                 beq   :stesso
+* A new position. The picture is still at the old one: rub that
+* out before the coordinates change, or the dream stamps a copy
+* of the girl (and of Zak, and of the hat) at every step.
+                 lda   DrawObj
+                 sta   ObjNo
+                 jsr   GetObjState
+                 sta   TmpW
+                 and   #8
+                 beq   :solopos
+                 lda   TmpW
+                 and   #$0007               ; state, without "on screen"
+                 jsr   PutObjState
+                 jsr   AggiornaOggetto
+:solopos         lda   DrawObj
+                 sta   ObjFound
+                 jsr   TrovaOggetto
                  bcs   :fine
-                 jsr   LeggiObj
+                 lda   ObjCd
+                 clc
+                 adc   #7
+                 tay
+                 sep   #$20
+                 mx    %10
+                 lda   DrawX
+                 sta   [zpRaw],y
+                 iny
+                 lda   [zpRaw],y            ; keep the parent-state bit
+                 and   #$80
+                 ora   DrawY
+                 sta   [zpRaw],y
+                 rep   #$20
+                 mx    %00
+:stesso          jsr   LeggiObj
                  bcs   :fine
                  lda   DstX
                  sta   RectX
@@ -9012,8 +10729,14 @@ SpegniStessoPosto
 :fine            rts
 
 *=======================================================================
-* ObjectAt - the lit object under (FindX, FindY), or zero
+* ObjectAt - the object under (FindX, FindY), or zero
 *=======================================================================
+* Every named room object whose rectangle contains the point is a
+* candidate; the smallest area wins, so a cord or a remote beats the TV
+* or the sofa they sit on. Parent is the same chain as drawing: that is
+* how the cord and the remote stay hidden until the cushions are lifted,
+* and how the food stays unclickable while the fridge door is shut.
+* State bit 2 is V2 "untouchable"; owner 15 means it is still in the room.
 ObjectAt         lda   RoomH
                  bne   :c_e
 :vuoto           lda   #0
@@ -9025,67 +10748,109 @@ ObjectAt         lda   RoomH
                  beq   :vuoto
                  asl   a
                  sta   ObjTabLen
+                 beq   :vuoto
                  stz   ObjIdx
-
-:lp              bra   :corpo
-:salta           brl   :prossimo            ; trampoline for the short branches
-:corpo           lda   ObjIdx
+                 stz   ObjWant
+                 lda   #$FFFF
+                 sta   BestArea
+:lp              lda   ObjIdx
                  jsr   ObjCdDaIdx
                  sta   ObjCd
-                 beq   :salta
+                 beq   :salto
                  clc
                  adc   #4
                  tay
                  lda   [zpRaw],y
                  sta   ObjNo
-                 sta   ObjWant
+                 beq   :salto
+                 jsr   GetObjOwner
+                 cmp   #15
+                 bne   :salto
                  jsr   GetObjState
-                 and   #2                   ; "untouchable": the game
-                 bne   :salta            ; skip
+                 and   #2
+                 bne   :salto
+* Zak: skip nameless scenery so random hotspots do not steal clicks.
+* The save screen's Save/Load/Cancel (703-705) and Game A-J builders
+* are nameless on purpose - allow them while the disk UI is open.
+                 lda   IsZak
+                 beq   :mmok
+                 lda   DiscoAperto
+                 bne   :mmok
+                 jsr   NomeC_e
+                 bcs   :salto
+:mmok            lda   ObjTabLen
+                 sta   PadreLen
+                 jsr   PadreOk
+                 bcs   :salto
+                 jsr   RettSotto
+                 bcc   :cand
+:salto           brl   :prossimo
+:cand            jsr   AreaObj
+                 cmp   BestArea
+                 bcs   :prossimo
+                 sta   BestArea
+                 lda   ObjNo
+                 sta   ObjWant
+:prossimo        lda   ObjIdx
+                 clc
+                 adc   #2
+                 sta   ObjIdx
+                 cmp   ObjTabLen
+                 bcs   :fine
+                 brl   :lp
+:fine            lda   ObjWant
+                 rts
 
-* The parent chain: an object inside something can only be clicked if
-* that something is in the right state (the cupboard open, and so on).
-                 lda   ObjCd
-                 sta   ChainCd
-:catena          lda   ChainCd
+* NomeC_e - carry set if this object has no name to put on the sentence
+NomeC_e          lda   ObjCd
                  clc
-                 adc   #8
-                 tay
-                 lda   [zpRaw],y
-                 and   #$0080               ; the state the parent must
-                 beq   :attesa0             ; have
-                 lda   #8
-                 bra   :attesa
-:attesa0         lda   #0
-:attesa          sta   ParState
-                 lda   ChainCd
-                 clc
-                 adc   #10
+                 adc   #14
                  tay
                  lda   [zpRaw],y
                  and   #$00FF
-                 sta   ParIdx
-                 beq   :prova               ; no parent: it can be
-
-                 dec   a                    ; the index counts from one
-                 asl   a
-                 jsr   ObjCdDaIdx
-                 sta   ChainCd
-                 beq   :salta
+                 beq   :no
                  clc
-                 adc   #4
+                 adc   ObjCd
                  tay
                  lda   [zpRaw],y
-                 sta   ObjNo
-                 jsr   GetObjState
-                 and   #8
-                 cmp   ParState
-                 beq   :catena
-                 bra   :salta
+                 and   #$00FF
+                 beq   :no
+                 clc
+                 rts
+:no              sec
+                 rts
 
-:prova           bra   :rett
-:salta2          brl   :prossimo            ; second trampoline
-:rett            lda   ObjCd                ; the object's rectangle
+* AreaObj - A = width * height of ObjCd
+AreaObj          lda   ObjCd
+                 clc
+                 adc   #9
+                 tay
+                 lda   [zpRaw],y
+                 and   #$00FF
+                 asl   a
+                 asl   a
+                 asl   a
+                 sta   TmpW
+                 lda   ObjCd
+                 clc
+                 adc   #13
+                 tay
+                 lda   [zpRaw],y
+                 and   #$00F8
+                 sta   TmpW2
+                 lda   #0
+                 ldx   TmpW
+                 beq   :zero
+:mul             clc
+                 adc   TmpW2
+                 dex
+                 bne   :mul
+:zero            rts
+
+* RettSotto - is (FindX,FindY) inside ObjCd's rectangle?
+* Carry clear if it is. Same edges as ScummVM V2: left/top inclusive,
+* right/bottom exclusive, height from the high bits of byte 13.
+RettSotto        lda   ObjCd
                  clc
                  adc   #7
                  tay
@@ -9096,10 +10861,8 @@ ObjectAt         lda   RoomH
                  asl   a
                  sta   TmpW
                  lda   FindX
-                 sec
-                 sbc   TmpW
-                 bmi   :salta2
-                 sta   TmpW2
+                 cmp   TmpW
+                 bcc   :no
                  lda   ObjCd
                  clc
                  adc   #9
@@ -9109,10 +10872,11 @@ ObjectAt         lda   RoomH
                  asl   a
                  asl   a
                  asl   a
-                 cmp   TmpW2
-                 bcc   :salta2
-                 beq   :salta2
-
+                 clc
+                 adc   TmpW
+                 cmp   FindX
+                 beq   :no
+                 bcc   :no
                  lda   ObjCd
                  clc
                  adc   #8
@@ -9124,30 +10888,22 @@ ObjectAt         lda   RoomH
                  asl   a
                  sta   TmpW
                  lda   FindY
-                 sec
-                 sbc   TmpW
-                 bmi   :salta2
-                 sta   TmpW2
+                 cmp   TmpW
+                 bcc   :no
                  lda   ObjCd
                  clc
                  adc   #13
                  tay
                  lda   [zpRaw],y
                  and   #$00F8
-                 cmp   TmpW2
-                 bcc   :salta2
-                 beq   :salta2
-                 lda   ObjWant              ; found
-                 rts
-
-:prossimo        lda   ObjIdx
                  clc
-                 adc   #2
-                 sta   ObjIdx
-                 cmp   ObjTabLen
-                 bcs   :niente
-                 brl   :lp
-:niente          lda   #0
+                 adc   TmpW
+                 cmp   FindY
+                 beq   :no
+                 bcc   :no
+                 clc
+                 rts
+:no              sec
                  rts
 
 *=======================================================================
@@ -9369,6 +11125,22 @@ hUnoW            jsr   VOW1
 hDueB            jsr   VOB1
                  jsr   VOB2
                  stz   Esito
+                 rts
+
+* setActorElevation ($3D): how far above the floor the actor is drawn.
+* Zak's dream parks the alien in the cloud with this, then drops him.
+hSetElev         jsr   VOB1
+                 sta   ActNo
+                 jsr   VOB2
+                 sta   ActArg
+                 lda   ActNo
+                 jsr   ActIndex
+                 bcs   :fine
+                 stx   ActIdx
+                 lda   ActArg
+                 sta   ActElev,x
+                 jsr   SegnaAttore
+:fine            stz   Esito
                  rts
 
 hDueBW           jsr   VOB1
@@ -9603,8 +11375,30 @@ hObjPrep         jsr   VOW1
                  rts
 
 hBoxFlags        jsr   VOB1
+                 sta   TmpW
                  jsr   FetchB
-                 stz   Esito
+                 sta   TmpW2
+                 lda   BoxOff
+                 beq   :fine
+                 lda   TmpW
+                 cmp   NumBox
+                 bcs   :fine
+                 asl   a
+                 asl   a
+                 asl   a
+                 clc
+                 adc   BoxOff
+                 inc   a
+                 clc
+                 adc   #7
+                 tay
+                 sep   #$20
+                 mx    %10
+                 lda   TmpW2
+                 sta   [zpRaw],y
+                 rep   #$20
+                 mx    %00
+:fine            stz   Esito
                  rts
 
 hResB            jsr   FetchB
@@ -9861,14 +11655,75 @@ DistanzaFra      lda   DistB
 
 :nonatt          lda   DistA
                  jsr   DovE
-                 bcs   :lontano
-                 lda   PosX
+                 bcc   :aok
+                 brl   :lontano
+:aok             lda   PosX
                  sta   DistX1
                  lda   PosY
                  sta   DistY1
                  lda   DistB
                  jsr   DovE
-                 bcs   :lontano
+                 bcc   :bok
+                 brl   :lontano
+:bok             anop
+
+* V2 getObjActToObjActDist: if the first is an actor and the second an
+* object, snap the object's walk point into a box. walkActorToObject
+* already walked to that same point; without the snap, getDist stays
+* > 2 (the sign at y=52 vs the sidewalk at 57, the stairs at 20 vs
+* box 0 at 36) and script 2 prints "I can't reach it" and RESETS to
+* Walk to. Invisible boxes stay out (BoxLockOk=0).
+*
+* Zak walk (AvviaCamminoQui) keeps the official point when the snap
+* moves less than 2: room-2 cushion #119 is at (33,52), snapped to
+* (33,53). Using the snap here made getDist=1 while ego stood on the
+* walk point, so verb 253 cleared state 8 and the remote stayed buried.
+                 lda   DistA
+                 jsr   ActIndex
+                 bcs   :nosnap
+                 lda   ActRoom,x
+                 beq   :nosnap
+                 lda   DistB
+                 jsr   ActIndex
+                 bcs   :snap
+                 lda   ActRoom,x
+                 bne   :nosnap
+:snap            stz   BoxLockOk
+                 lda   PosX
+                 sta   BoxQx
+                 sta   WalkAX               ; official walk point
+                 lda   PosY
+                 sta   BoxQy
+                 sta   WalkAY
+                 jsr   AvvicinaPunto
+                 lda   BoxScelta
+                 cmp   #$FFFF
+                 beq   :nosnap
+                 lda   IsZak
+                 beq   :applica
+                 lda   WalkAX
+                 sec
+                 sbc   BoxQx
+                 bpl   :sdx
+                 eor   #$FFFF
+                 inc   a
+:sdx             sta   WalkAX
+                 lda   WalkAY
+                 sec
+                 sbc   BoxQy
+                 bpl   :sdy
+                 eor   #$FFFF
+                 inc   a
+:sdy             cmp   WalkAX
+                 bcs   :smag
+                 lda   WalkAX
+:smag            cmp   #2
+                 bcc   :nosnap              ; match walk: keep official
+:applica         lda   BoxQx
+                 sta   PosX
+                 lda   BoxQy
+                 sta   PosY
+:nosnap          anop
 
                  lda   DistX1               ; |x1 - x2|
                  sec
@@ -9903,10 +11758,12 @@ DovE             sta   NomeChi
                  cmp   #NACT
                  bcs   :oggetto
                  jsr   ActIndex
-                 bcs   :no
+                 bcs   :oggetto
+* Slots 14..24 exist in the table but Zak's actors stop at 13.
+* The same numbers are objects (kazoo, CashCard, power cord, remote).
+* An unused slot has room 0: that number is the object, not a person.
                  lda   ActRoom,x
-                 cmp   CurRoom
-                 bne   :no
+                 beq   :oggetto
                  lda   ActX,x
                  sta   PosX
                  lda   ActY,x
@@ -9981,8 +11838,9 @@ hPutAtObj        jsr   VOB1
                  sta   ActX,x
                  lda   ActArg2
                  sta   ActY,x
-                 stz   ActMoving,x
                  stx   ActIdx
+                 stz   ActMoving,x
+                 jsr   FermaPose
                  jsr   MostraUno
 :fine            stz   Esito
                  rts
@@ -10294,14 +12152,8 @@ TrovaVerbo       ldx   #0
 * part of the name.
 LeggiNome        stz   NameLen
                  lda   VerbIdx
-                 lsr   a                    ; slot
-                 sta   TmpW
-                 asl   a
-                 clc
-                 adc   TmpW                 ; times three
-                 asl   a
-                 asl   a                    ; and by four: twelve
-                 sta   NameBase             ; slot * 12
+                 jsr   NomeOffVerbo
+                 sta   NameBase             ; slot * VERBNAME
 :lp              jsr   FetchB
                  beq   :fine
                  cmp   #$00FE
@@ -10311,7 +12163,7 @@ LeggiNome        stz   NameLen
 :normale         cmp   #'@'
                  beq   :lp
                  ldx   NameLen
-                 cpx   #11
+                 cpx   #VERBNAME-1
                  bcs   :lp
                  pha
                  txa
@@ -10336,6 +12188,97 @@ LeggiNome        stz   NameLen
                  sta   VerbName,x
                  rep   #$20
                  mx    %00
+                 jsr   PatchCredVerb
+                 rts
+
+* Credits arrive as verb names (script 111), not as print(). Same two
+* substitutions as RiscriviCred: IBM → IIGS port, Hayes → dots.
+PatchCredVerb    lda   zpStr
+                 pha
+                 lda   zpStr+2
+                 pha
+                 lda   NameBase
+                 tax
+                 clc
+                 adc   #VERBNAME
+                 sta   TmpW2
+:c1              cpx   TmpW2
+                 bcs   :no
+                 lda   VerbName,x
+                 and   #$007F
+                 cmp   #'I'
+                 bne   :k
+                 lda   VerbName+1,x
+                 and   #$007F
+                 cmp   #'B'
+                 bne   :k
+                 lda   VerbName+2,x
+                 and   #$007F
+                 cmp   #'M'
+                 beq   :ibm
+:k               lda   VerbName,x
+                 and   #$007F
+                 cmp   #'H'
+                 bne   :av
+                 lda   VerbName+1,x
+                 and   #$007F
+                 cmp   #'a'
+                 bne   :av
+                 lda   VerbName+2,x
+                 and   #$007F
+                 cmp   #'y'
+                 beq   :nomi
+:av              inx
+                 bra   :c1
+:no              bra   :esci
+:ibm             lda   #MsgIIGS
+                 bra   :copia
+:nomi            lda   #MsgMusica
+:copia           sta   zpStr
+                 lda   #^MsgIIGS
+                 sta   zpStr+2
+                 lda   NameBase
+                 tax
+                 stz   NameLen
+:lp              lda   [zpStr]
+                 and   #$00FF
+                 beq   :term
+                 sep   #$20
+                 mx    %10
+                 sta   VerbName,x
+                 rep   #$20
+                 mx    %00
+                 inc   zpStr
+                 inx
+                 inc   NameLen
+                 lda   NameLen
+                 cmp   #VERBNAME-1
+                 bcc   :lp
+:term            sep   #$20
+                 mx    %10
+                 lda   #0
+                 sta   VerbName,x
+                 rep   #$20
+                 mx    %00
+                 lda   NameBase             ; dots: centre on the 40-wide line
+                 tax
+                 lda   VerbName,x
+                 and   #$007F
+                 cmp   #'.'
+                 bne   :esci
+                 lda   #40
+                 sec
+                 sbc   NameLen
+                 lsr   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 ldx   VerbIdx
+                 sta   VerbX,x
+:esci            pla
+                 sta   zpStr+2
+                 pla
+                 sta   zpStr
                  rts
 
 *=======================================================================
@@ -10369,6 +12312,21 @@ DrawVerbiSoli    stz   VerbIdx
                  jsr   SetTextColor
                  rts
 
+* Zak credits (script 111): cursorCommand($8400) sets UserIface=$80
+* (verbs on, sentence off). Those lines stay up after loadRoom(51/55/49);
+* room 58 is only the starfield before Var[60] unblocks them. SEC = do
+* not light. Maniac never takes this path.
+CredNoHover      lda   IsZak
+                 beq   :no
+                 lda   UserIface
+                 and   #$00E0
+                 cmp   #$0080
+                 bne   :no
+                 sec
+                 rts
+:no              clc
+                 rts
+
 *=======================================================================
 * DrawUnoVerbo - one slot (VerbIdx): colour from on/off and VerbHover
 *=======================================================================
@@ -10381,11 +12339,13 @@ DrawUnoVerbo     ldx   VerbIdx
                  beq   :vivo
                  lda   #COLVERBDIM
                  bra   :coloreok
-:vivo            lda   VerbIdx
+:vivo            jsr   CredNoHover
+                 bcs   :riposo
+                 lda   VerbIdx
                  inc   a
                  cmp   VerbHover
                  beq   :acceso
-                 lda   #COLVERB
+:riposo          lda   #COLVERB
                  bra   :coloreok
 :acceso          lda   #COLVERBHI
 :coloreok        jsr   SetTextColor
@@ -10398,13 +12358,7 @@ DrawUnoVerbo     ldx   VerbIdx
                  lda   VerbY,x
                  sta   TxtY
                  lda   VerbIdx
-                 lsr   a
-                 sta   TmpW
-                 asl   a
-                 clc
-                 adc   TmpW
-                 asl   a
-                 asl   a
+                 jsr   NomeOffVerbo
                  clc
                  adc   #VerbName
                  sta   zpStr
@@ -10412,6 +12366,19 @@ DrawUnoVerbo     ldx   VerbIdx
                  sta   zpStr+2
                  jsr   DrawStr
 :fine            rts
+
+* VerbIdx (slot times two) to the offset of that name in VerbName.
+NomeOffVerbo     lsr   a                    ; slot
+                 sta   TmpW
+                 asl   a
+                 asl   a
+                 asl   a                    ; times eight
+                 sta   NameBase
+                 asl   a
+                 asl   a                    ; times thirty-two
+                 clc
+                 adc   NameBase             ; times forty
+                 rts
 
 *=======================================================================
 * DipingiCambioVerbo - un-light the previous verb, light the new one
@@ -10484,10 +12451,16 @@ DrawFraseReal    lda   SentHot
                  jsr   ScriviNomeVerbo
 
                  lda   Vars+VO_SENTOBJ1
+                 bne   :obj1
+                 lda   Vars+VO_SENTPREP     ; still picking the first noun
+                 bne   :fine
+                 lda   HoverNow
                  beq   :fine
-                 jsr   Spazio
+:obj1            jsr   Spazio
                  lda   Vars+VO_SENTOBJ1
-                 jsr   ScriviNomeDi
+                 bne   :n1
+                 lda   HoverNow
+:n1              jsr   ScriviNomeDi
 
                  lda   Vars+VO_SENTPREP     ; in, with, on, to
                  beq   :senzaprep
@@ -10507,10 +12480,16 @@ DrawFraseReal    lda   SentHot
                  jsr   DrawStrFino
 
 :senzaprep       lda   Vars+VO_SENTOBJ2
+                 bne   :obj2
+                 lda   Vars+VO_SENTPREP
                  beq   :fine
-                 jsr   Spazio
+                 lda   HoverNow
+                 beq   :fine
+:obj2            jsr   Spazio
                  lda   Vars+VO_SENTOBJ2
-                 jsr   ScriviNomeDi
+                 bne   :n2
+                 lda   HoverNow
+:n2              jsr   ScriviNomeDi
 :fine            lda   #15
                  jmp   SetTextColor
 
@@ -10521,13 +12500,7 @@ Spazio           inc   TxtX
 * ScriviNomeVerbo - the name of the verb in slot X
 *=======================================================================
 ScriviNomeVerbo  txa
-                 lsr   a                    ; slot
-                 sta   TmpW
-                 asl   a
-                 clc
-                 adc   TmpW                 ; times three
-                 asl   a
-                 asl   a                    ; and by four: twelve
+                 jsr   NomeOffVerbo
                  clc
                  adc   #VerbName
                  sta   zpStr
@@ -10538,13 +12511,23 @@ ScriviNomeVerbo  txa
 *=======================================================================
 * ScriviNomeDi - A = object or actor number: writes its name
 *=======================================================================
+* Numbers below NACT are characters only if that slot is actually in a
+* room. Zak's actors stop at 13; 14..24 are objects (kazoo, CashCard,
+* power cord, remote). Treating them as people wrote a blank ActName
+* on the sentence: "Use " with nothing after it, which is how the cord
+* and the remote looked like they were not there.
 ScriviNomeDi     sta   NomeChi
                  jsr   NomeSostituito       ; did the game rename it?
                  bcs   :normale
                  jmp   DrawStrFino
 :normale         lda   NomeChi
-                 cmp   #NACT                ; low numbers are the characters
+                 cmp   #NACT
                  bcs   :oggetto
+                 jsr   ActIndex
+                 bcs   :oggetto
+                 lda   ActRoom,x
+                 beq   :oggetto
+                 lda   NomeChi
                  asl   a
                  sta   TmpW
                  asl   a
@@ -10957,6 +12940,8 @@ GuardaVerbo      PushPtr PuntoMou
                  bcs   :noninv
                  jsr   VerboInPunto         ; on the verb panel
                  bcs   :fatto
+                 jsr   CredNoHover
+                 bcs   :fatto
                  lda   VerbIdx
                  inc   a
                  sta   VerbHover
@@ -11004,13 +12989,141 @@ GuardaVerbo      PushPtr PuntoMou
                  rts
 
 *=======================================================================
+* AggiornaMouseVirt - script 4's findObject reads these every click,
+* and What Is polls them every frame. They have to follow the pointer,
+* not the last mouse-down.
+*=======================================================================
+AggiornaMouseVirt lda  PtoX
+                 clc
+                 adc   ScrollX
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 sta   Vars+VO_MOUSEX
+                 lda   PtoY
+                 sec
+                 sbc   #ROOMTOP
+                 bpl   :yok
+                 lda   #0
+:yok             lsr   a
+                 sta   Vars+VO_MOUSEY
+                 rts
+
+*=======================================================================
+* FraseSottoPuntatore - put the name of the thing under the pointer
+* on the sentence line. Script 4 only runs on a click; without a hover
+* "Walk to" and "Use" stay empty. SENTOBJ1 is NOT filled for Unlock /
+* Give / Fix (and Use-with): those verbs set a preposition, and a
+* pre-filled SENTOBJ1 makes Var[34]=1 so script 4 RESETS to Walk to
+* instead of waiting for "with key".
+*=======================================================================
+FraseSottoPuntatore lda UserIface
+                 and   #$0020
+                 beq   :fine
+                 lda   PtoY
+                 cmp   #ROOMTOP
+                 bcc   :fine
+                 cmp   #PANTOP
+                 bcs   :fine
+                 lda   PtoX
+                 cmp   #SCRPIX
+                 bcs   :fine
+                 clc
+                 adc   ScrollX
+                 sta   FindX
+                 lda   PtoY
+                 sec
+                 sbc   #ROOMTOP
+                 sta   FindY
+                 jsr   ObjectAt
+                 cmp   HoverNow
+                 bne   :nuovo
+                 rts
+:nuovo           sta   HoverNow
+                 lda   Vars+VO_SENTPREP
+                 bne   :secondo
+                 jsr   FraseNoObj1
+                 bcs   :disegna
+                 lda   HoverNow
+                 cmp   Vars+VO_SENTOBJ1
+                 beq   :fine
+                 sta   Vars+VO_SENTOBJ1
+                 jmp   DrawFrase
+:secondo         lda   HoverNow
+                 cmp   Vars+VO_SENTOBJ2
+                 beq   :fine
+                 sta   Vars+VO_SENTOBJ2
+                 jmp   DrawFrase
+:disegna         jmp   DrawFrase
+:fine            rts
+
+* Carry set: do not write SENTOBJ1 (two-object verbs / Use-with).
+FraseNoObj1      lda   Vars+VO_SENTVERB
+                 cmp   #3                   ; Give ... to
+                 beq   :no
+                 cmp   #6                   ; Fix ... with
+                 beq   :no
+                 cmp   #8                   ; Unlock ... with
+                 beq   :no
+                 cmp   #11                  ; Use: only if the object
+                 bne   :si                  ; itself asks for a preposition
+                 lda   HoverNow
+                 beq   :si
+                 sta   NomeChi
+                 jsr   CercaObcd
+                 bcs   :si
+                 ldy   #12
+                 lda   [zpNome],y
+                 and   #$00FF
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 beq   :si
+:no              sec
+                 rts
+:si              clc
+                 rts
+
+*=======================================================================
 * SpegniScena - black out the play area
 *=======================================================================
 * Loading a room on the IIGS takes nearly a second. Without this the last
 * frame of the previous one stays on screen the whole time, and it reads
 * as a freeze. "Loading..." sits in the black playfield until DrawRoom
 * puts the new picture on top of it.
-SpegniScena      jsr   MusDuck              ; freeze DOC: loading must not loop the last notes
+SpegniScena      lda   CurRoom
+                 beq   :room0               ; room 0 is a black gap, not a load
+                 lda   IsZak
+                 beq   :normale
+                 lda   CurRoom
+                 cmp   #46                  ; title: do not wipe, do not say
+                 beq   :niente              ; "Loading..." over the logo
+                 cmp   #51                  ; bed / title pan
+                 beq   :niente
+                 cmp   #55                  ; Lucasfilm copyright
+                 beq   :niente
+                 cmp   #49                  ; newspaper dream after it
+                 beq   :niente
+                 cmp   #58
+                 beq   :niente
+                 bra   :normale
+:room0           bra   :nero                ; gap: black, not the last frame
+:nero            jsr   MusDuck
+                 _HideCursor
+                 stz   FillStart
+                 lda   #PANOFF
+                 sta   FillEnd
+                 lda   #$0000
+                 jsr   FillArea
+                 _ShowCursor
+                 jsr   DrawMsg
+                 stz   InCarico
+                 rts
+:normale         lda   #1
+                 sta   InCarico             ; no credit on the black "Loading..."
+                 jsr   MusDuck              ; freeze DOC: loading must not loop the last notes
                  _HideCursor
                  stz   FillStart
                  lda   #PANOFF
@@ -11021,6 +13134,9 @@ SpegniScena      jsr   MusDuck              ; freeze DOC: loading must not loop 
                  _ShowCursor
                  jsr   DrawMsg              ; and away with the old sentence,
                  rts                        ; at once: not when loading ends
+:niente          jsr   MusDuck
+                 stz   InCarico
+                 rts
 
 *=======================================================================
 * MostraCarico - centred in the play area, on the black just laid down
@@ -11099,6 +13215,34 @@ DueCifre         ldx   #'0'
                  rts
 
 *=======================================================================
+* HoldSeLogo - keep Zak's title card (bed / Lucasfilm copyright)
+*=======================================================================
+* MACHINE_SPEED is 80 so the long dream runs, but that same flag skips
+* the delay(180) before leaving room 55. The copyright has just been
+* drawn; without a pause here SpegniScena paints "Loading..." over it.
+HoldSeLogo       lda   IsZak
+                 beq   :no
+                 lda   CurRoom
+                 cmp   #51                  ; pan onto the title
+                 beq   :hold
+                 cmp   #55                  ; copyright objects 756-760
+                 bne   :no
+:hold            PushLong #0
+                 _GetTick
+                 PullLong Tick
+                 lda   Tick
+                 sta   TmpW
+:lp              PushLong #0
+                 _GetTick
+                 PullLong Tick
+                 lda   Tick
+                 sec
+                 sbc   TmpW
+                 cmp   #240                 ; four seconds
+                 bcc   :lp
+:no              rts
+
+*=======================================================================
 * ChangeRoom - A = room number
 *=======================================================================
 ChangeRoom       pha                        ; new room
@@ -11106,6 +13250,7 @@ ChangeRoom       pha                        ; new room
                  beq   :noex                ; first room: nothing to leave
                  cmp   1,s
                  beq   :noex
+                 jsr   HoldSeLogo           ; keep the Lucas card a moment
                  jsr   EseguiUscita         ; EXCD while the old file is still here
                  lda   PlayingId            ; foyer clock must not follow you
                  cmp   #28
@@ -11204,12 +13349,15 @@ ChangeRoom       pha                        ; new room
                  lda   EnterOff
                  sta   SlotPC,x
                  jsr   GiraSubito
-:fine            rts
+:fine            stz   InCarico
+                 rts
 :vuota           jsr   MusUnduck
                  stz   RoomW
                  stz   RoomH
+                 stz   DaComporre
                  lda   #1
                  sta   Redraw
+                 stz   InCarico
                  rts
 
 * V2 room header: EXCD at $18, ENCD at $1A. The exit must run now, nested,
@@ -11295,6 +13443,7 @@ DecodeRoom       ldy   #4
                  sta   BlkW
                  lda   RoomH
                  sta   BlkH
+                 stz   SkipCloud8           ; cloud grey must be painted
                  jsr   DecodeRLE
                  lda   SrcIdx               ; the room's mask begins here,
                  sta   MaskSrc              ; right after its pixels
@@ -11322,7 +13471,16 @@ DecodeRoom       ldy   #4
 RifaiMaschera    lda   RoomH
                  bne   :c_e
                  rts
-:c_e             ldy   #$0A                 ; room picture, not the last object
+* The plane only has to be decoded once per room: after that the clean
+* copy in zpMask0 is the same bytes, and a block move is far cheaper than
+* running the whole run-length stream again. In the alien room, where the
+* screens animate every frame, that decode alone was a third of the time.
+:c_e             lda   CurRoom
+                 cmp   Masc0Room
+                 bne   :decodi
+                 jsr   CopiaMasc0
+                 rts
+:decodi          ldy   #$0A                 ; room picture, not the last object
                  lda   [zpRaw],y
                  clc
                  adc   zpRaw
@@ -11338,7 +13496,138 @@ RifaiMaschera    lda   RoomH
                  sta   BlkW
                  lda   RoomH
                  sta   BlkH
-                 jmp   DecodeMaschera
+                 jsr   DecodeMaschera
+                 jsr   SalvaMasc0
+                 lda   CurRoom
+                 sta   Masc0Room
+                 rts
+
+*=======================================================================
+* BaseMascRett - the clean mask back inside AggX..AggR / AggY..AggB
+*=======================================================================
+* What an object state change really needs. The whole plane used to be
+* decoded again (through DaComporre) only because one object's square
+* had gone stale; this puts back that square from the clean copy, and
+* RidisegnaRett then stamps the masks of the lit objects that touch it.
+* Whole bytes: the two edges are rounded out to the eight-pixel column.
+BaseMascRett     lda   RoomH
+                 bne   :c_e
+                 rts
+:c_e             lda   AggX
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 sta   MascC1
+                 lda   AggR
+                 clc
+                 adc   #7
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 cmp   MaskPitch
+                 bcc   :c2ok
+                 lda   MaskPitch
+:c2ok            cmp   MascC1
+                 beq   :vuoto
+                 bcs   :largo
+:vuoto           rts
+:largo           sec
+                 sbc   MascC1
+                 sta   MascNb               ; bytes on each row
+                 lda   AggY
+                 sta   MascY
+:riga            lda   MascY
+                 cmp   AggB
+                 bcc   :nonfinito
+                 rts
+:nonfinito       cmp   RoomH
+                 bcc   :fai
+                 rts
+:fai             asl   a
+                 tax
+                 lda   MaskRow,x
+                 clc
+                 adc   MascC1
+                 tay
+                 ldx   MascNb
+                 sep   #$20
+                 mx    %10
+:byte            lda   [zpMask0],y
+                 sta   [zpMask],y
+                 iny
+                 dex
+                 bne   :byte
+                 rep   #$20
+                 mx    %00
+                 inc   MascY
+                 bra   :riga
+
+*=======================================================================
+* SalvaMasc0 / CopiaMasc0 - the clean plane there and back
+*=======================================================================
+MascLunghezza    lda   RoomH                ; bytes in the whole plane, from
+                 beq   :zero                ; the row table already built
+                 dec   a
+                 asl   a
+                 tax
+                 lda   MaskRow,x
+                 clc
+                 adc   MaskPitch
+                 rts
+:zero            lda   #0
+                 rts
+
+SalvaMasc0       jsr   MascLunghezza
+                 beq   :fine
+                 sta   MascLen
+                 lda   zpMask
+                 sta   MvnPtrS
+                 lda   zpMask+2
+                 sta   MvnSrcB
+                 lda   zpMask0
+                 sta   MvnPtrD
+                 lda   zpMask0+2
+                 sta   MvnDstB
+                 bra   MascCopia
+:fine            rts
+
+CopiaMasc0       jsr   MascLunghezza
+                 beq   :fine
+                 sta   MascLen
+                 lda   zpMask0
+                 sta   MvnPtrS
+                 lda   zpMask0+2
+                 sta   MvnSrcB
+                 lda   zpMask
+                 sta   MvnPtrD
+                 lda   zpMask+2
+                 sta   MvnDstB
+                 bra   MascCopia
+:fine            rts
+
+* MVN cannot cross a bank: when it would, fall back to the word loop.
+MascCopia        lda   MascLen
+                 dec   a
+                 sta   MvnC
+                 stz   MvnS
+                 jsr   MvnZp
+                 bcc   :fine
+                 lda   MvnPtrS              ; MVN would cross a bank: go the
+                 sta   zpSrc                ; slow way through long pointers
+                 lda   MvnSrcB
+                 sta   zpSrc+2
+                 lda   MvnPtrD
+                 sta   zpPix2
+                 lda   MvnDstB
+                 sta   zpPix2+2
+                 ldy   #0
+:lp              lda   [zpSrc],y
+                 sta   [zpPix2],y
+                 iny
+                 iny
+                 cpy   MascLen
+                 bcc   :lp
+:fine            rts
 
 *=======================================================================
 * ComponiStanza - what goes on top of the decoded background
@@ -11365,7 +13654,17 @@ ComponiStanza    stz   DaComporre
                  sta   CopyLen
                  jsr   ZeroRoomBuf
                  bra   :attori
-:c_eluce         jsr   DrawObjects
+* zpBg is the room with no objects and no characters. Painting the
+* objects onto whatever is already in zpPix (the last composed frame)
+* kept every costume stamp from the previous pass: setState08 of the
+* bakery window rebuilt the masks that way and the street filled with
+* leftover baker and Zak. Copy the clean room back first.
+:c_eluce         lda   IsZak
+                 beq   :ogg                 ; MM: objects onto the decoded room
+                 jsr   AltezzaByte
+                 sta   CopyLen
+                 jsr   CopiaBgPix
+:ogg             jsr   DrawObjects
 :attori          jsr   DrawActors
                  rts
 
@@ -11738,7 +14037,9 @@ DrawObjects      ldy   #20
                  bcs   :prossimo
                  lda   ObjImgOff
                  sta   SrcOff
+                 jsr   PrepSkipCloud8
                  jsr   DecodeRLE
+                 stz   SkipCloud8
 * An object carries a mask of its own, right after its picture, and it
 * has to go into the plane over the room's. The bowl of wax fruit is
 * where it showed: the bowl is painted into the room's background and is
@@ -11759,6 +14060,18 @@ DrawObjects      ldy   #20
                  brl   :lp
 :fine            rts
 
+* PrepSkipCloud8 - Zak room 49 objects only: colour 8 = transparent.
+* Room background decode must leave SkipCloud8 clear (the cloud IS 8).
+PrepSkipCloud8   stz   SkipCloud8
+                 lda   IsZak
+                 beq   :no
+                 lda   CurRoom
+                 cmp   #49
+                 bne   :no
+                 lda   #1
+                 sta   SkipCloud8
+:no              rts
+
 *=======================================================================
 * DecodeRLE - V2's column-wise compression
 *=======================================================================
@@ -11775,6 +14088,9 @@ DrawObjects      ldy   #20
 * tables, one with the colour as it is and one already shifted.
 *
 * In: SrcOff, DstX (even), DstY, BlkW, BlkH.
+* SkipCloud8 (set by the object drawers, not here): Zak room 49 object
+* colour 8 is cloud grey; writing it over object 700 erased the arm.
+* Must NOT be set while decoding the room background itself.
 DecodeRLE        lda   zpRaw
                  clc
                  adc   SrcOff
@@ -11794,14 +14110,16 @@ DecodeRLE        lda   zpRaw
 
                  lda   BlkH
                  beq   :colonna
-                 ldx   #0
+                 asl   a                    ; the tables are a word apart,
+                 sta   RigaXF               ; so one index serves for them
+                 ldx   #0                   ; and for RowOff
                  sep   #$20
                  mx    %10
                  lda   #0
 :pulisci         sta   DitLo,x
                  sta   DitHi,x
                  inx
-                 cpx   BlkH
+                 cpx   RigaXF
                  bcc   :pulisci
                  rep   #$20
                  mx    %00
@@ -11813,132 +14131,135 @@ DecodeRLE        lda   zpRaw
                  sta   ColByte
                  lda   DstY
                  asl   a
-                 tay
-                 lda   RowOff,y
+                 tax
+                 lda   RowOff,x
                  clc
                  adc   ColByte
                  sta   PixOff
                  stz   Riga
 
-                 lda   ClipOn
-                 beq   :veloce
-                 brl   :pixel               ; object refresh: clip per pixel
+* The fast loops below take the row's offset straight out of RowOff,
+* which counts from row zero, so the column's own first byte and the
+* block's top row are folded into a pointer once, here.
+                 lda   zpPix
+                 clc
+                 adc   PixOff
+                 sta   zpPix2
+                 lda   zpPix+2
+                 adc   #0
+                 sta   zpPix2+2
+                 stz   RigaX
 
-* Whole columns, one run at a time. The clip test is skipped; dither
-* tables still update so the next column is right.
-:veloce          lda   ColX
+                 lda   ColX
                  and   #1
                  sta   Dispari
-:run             lda   Riga
-                 cmp   BlkH
-                 bcc   :ancoracol
+
+* Clipping and the Zak cloud both need a decision per pixel, and both
+* happen on small pieces: they go the slow way. Everything else - the
+* rooms, the costumes, every object drawn whole - takes the loops below.
+                 lda   ClipOn
+                 ora   SkipCloud8
+                 beq   :veloce
+                 brl   :pixel
+
+* One stretch at a time: as many rows as the run has left, or as many as
+* the column has left. Whether the run carries its own colour and whether
+* the column is an odd one do not change inside a stretch, so they are
+* decided here instead of once per pixel. Inside a loop the accumulator
+* stays eight bits, the row index serves for both the dithering tables
+* and RowOff, and nothing is added or tested.
+:veloce          lda   RigaX
+                 cmp   RigaXF
+                 bcc   :ancora
                  brl   :finecol
-:ancoracol       lda   RunLen
-                 bne   :got
+:ancora          lda   RunLen
+                 bne   :quanto
                  jsr   NextRun
-:got             lda   BlkH
-                 sec
-                 sbc   Riga
-                 sta   RunNow
                  lda   RunLen
-                 cmp   RunNow
-                 bcs   :cap
-                 sta   RunNow
-:cap             lda   RunLen
+                 beq   :ancora              ; a length of zero: read again
+
+:quanto          asl   a                    ; rows to words
+                 clc
+                 adc   RigaX
+                 cmp   RigaXF
+                 bcc   :limite
+                 lda   RigaXF
+:limite          sta   FineTratto
                  sec
-                 sbc   RunNow
+                 sbc   RigaX
+                 lsr   a
+                 sta   FatteOra
+                 lda   RunLen
+                 sec
+                 sbc   FatteOra
                  sta   RunLen
-                 ldx   Riga
-                 ldy   PixOff
-                 lda   Dispari
-                 bne   :odd
+
+                 ldx   RigaX
                  lda   Dither
-                 bne   :dithpari
-:solpari         sep   #$20
+                 bne   :ricorda
+
+* A run that carries its own colour: it goes into the two tables, for
+* the dithered runs that come after it in this column, and on the
+* picture.
+                 sep   #$20
                  mx    %10
-:solp            lda   ColLo
+                 lda   Dispari
+                 bne   :nuovadis
+:nuovapar        lda   ColLo
                  sta   DitLo,x
                  lda   ColHi
                  sta   DitHi,x
-                 sta   [zpPix],y
-                 rep   #$20
-                 mx    %00
-                 tya
-                 clc
-                 adc   Pitch
-                 tay
+                 ldy   RowOff,x
+                 sta   [zpPix2],y           ; even column: the high nibble
                  inx
-                 sep   #$20
-                 mx    %10
-                 dec   RunNow
-                 bne   :solp
-                 rep   #$20
-                 mx    %00
-                 bra   :runok
-:dithpari        sep   #$20
-                 mx    %10
-:dithp           lda   DitHi,x
-                 sta   [zpPix],y
-                 rep   #$20
-                 mx    %00
-                 tya
-                 clc
-                 adc   Pitch
-                 tay
                  inx
-                 sep   #$20
-                 mx    %10
-                 dec   RunNow
-                 bne   :dithp
-                 rep   #$20
-                 mx    %00
-                 bra   :runok
-:odd             lda   Dither
-                 bne   :dithodd
-:solodd          sep   #$20
-                 mx    %10
-:solo            lda   ColLo
+                 cpx   FineTratto
+                 bcc   :nuovapar
+                 bra   :fattotratto
+
+:nuovadis        lda   ColLo
                  sta   DitLo,x
                  lda   ColHi
                  sta   DitHi,x
-                 lda   ColLo
-                 ora   [zpPix],y
-                 sta   [zpPix],y
-                 rep   #$20
-                 mx    %00
-                 tya
-                 clc
-                 adc   Pitch
-                 tay
+                 ldy   RowOff,x
+                 lda   ColLo                ; odd: the low nibble is added
+                 ora   [zpPix2],y
+                 sta   [zpPix2],y
                  inx
-                 sep   #$20
-                 mx    %10
-                 dec   RunNow
-                 bne   :solo
-                 rep   #$20
-                 mx    %00
-                 bra   :runok
-:dithodd         sep   #$20
-                 mx    %10
-:ditho           lda   DitLo,x
-                 ora   [zpPix],y
-                 sta   [zpPix],y
-                 rep   #$20
-                 mx    %00
-                 tya
-                 clc
-                 adc   Pitch
-                 tay
                  inx
-                 sep   #$20
+                 cpx   FineTratto
+                 bcc   :nuovadis
+                 bra   :fattotratto
+
+* A dithered run: every row keeps the colour it was left with.
+:ricorda         sep   #$20
                  mx    %10
-                 dec   RunNow
-                 bne   :ditho
-                 rep   #$20
+                 lda   Dispari
+                 bne   :vecchiadis
+:vecchiapar      ldy   RowOff,x
+                 lda   DitHi,x
+                 sta   [zpPix2],y
+                 inx
+                 inx
+                 cpx   FineTratto
+                 bcc   :vecchiapar
+                 bra   :fattotratto
+
+:vecchiadis      ldy   RowOff,x
+                 lda   DitLo,x
+                 ora   [zpPix2],y
+                 sta   [zpPix2],y
+                 inx
+                 inx
+                 cpx   FineTratto
+                 bcc   :vecchiadis
+
+:fattotratto     rep   #$30
                  mx    %00
-:runok           stx   Riga
-                 sty   PixOff
-                 brl   :run
+                 lda   FineTratto
+                 sta   RigaX
+                 brl   :veloce
+
 
 :pixel           lda   ColX
                  and   #1
@@ -11949,8 +14270,10 @@ DecodeRLE        lda   zpRaw
 :dentro          lda   Dither
                  bne   :usatab
 
-                 ldx   Riga                 ; new colour: goes into the two
-                 sep   #$20                 ; tables, for this row
+                 lda   Riga                 ; new colour: goes into the two
+                 asl   a                    ; tables, for this row
+                 tax
+                 sep   #$20
                  mx    %10
                  lda   ColLo
                  sta   DitLo,x
@@ -11983,11 +14306,24 @@ DecodeRLE        lda   zpRaw
                  bcc   :scrivi
 :niente          bra   :scritto2
 
-:scrivi          ldx   Riga
+:scrivi          lda   Riga
+                 asl   a
+                 tax
                  ldy   PixOff
                  sep   #$20
                  mx    %10
+                 lda   SkipCloud8
+                 beq   :scrok
                  lda   Dispari
+                 bne   :scrlo
+                 lda   DitHi,x
+                 cmp   #$80
+                 beq   :scritto
+                 bra   :scrok
+:scrlo           lda   DitLo,x
+                 cmp   #8
+                 beq   :scritto
+:scrok           lda   Dispari
                  bne   :basso
                  lda   DitHi,x              ; even column: high nibble
                  sta   [zpPix],y
@@ -12007,7 +14343,8 @@ DecodeRLE        lda   zpRaw
                  inc   Riga
                  lda   Riga
                  cmp   BlkH
-                 bcc   :pixlp
+                 bcs   :finecol
+                 brl   :pixlp
 
 :finecol         inc   ColX
                  lda   ColX
@@ -12025,12 +14362,18 @@ DecodeRLE        lda   zpRaw
 *=======================================================================
 * NextRun - the next group of identical pixels
 *=======================================================================
+* The pointer is walked rather than indexed, which is cheaper; but a
+* room is forty thousand bytes and the Memory Manager puts it where it
+* likes, so it can run off the end of a bank. The carry has to reach the
+* bank byte.
 NextRun          sep   #$20
                  mx    %10
                  lda   [zpSrc]
                  inc   zpSrc
                  bne   :oklo
                  inc   zpSrc+1
+                 bne   :oklo
+                 inc   zpSrc+2
 :oklo            sta   RunByte
                  rep   #$20
                  mx    %00
@@ -12070,6 +14413,8 @@ NextRun          sep   #$20
                  inc   zpSrc
                  bne   :ok2
                  inc   zpSrc+1
+                 bne   :ok2
+                 inc   zpSrc+2
 :ok2             sta   RunLen
                  stz   RunLen+1
                  rep   #$20
@@ -12194,7 +14539,16 @@ BuildEsp         lda   TxtCol
 *=======================================================================
 DrawChar         and   #$007F
                  cmp   #33                  ; space and low codes: blank
-                 bcs   :disegna
+                 bcs   :incolonna
+                 rts
+* Never write past the last column. A glyph at column 40+ lands on the
+* next scanline's SHR control bytes and paints red stripes across the
+* panel, so clamp here rather than trusting every caller to count.
+:incolonna       pha
+                 lda   TxtX
+                 cmp   #40
+                 pla
+                 bcc   :disegna
                  rts
 :disegna         asl   a
                  asl   a
@@ -12268,7 +14622,13 @@ DrawChar         and   #$007F
 * dialog turns every letter into a black brick.
 DrawCharInk      and   #$007F
                  cmp   #33
-                 bcs   :go
+                 bcs   :incolonna
+                 rts
+:incolonna       pha                        ; same column clamp as DrawChar
+                 lda   TxtX
+                 cmp   #40
+                 pla
+                 bcc   :go
                  rts
 :go              asl   a
                  asl   a
@@ -12423,10 +14783,16 @@ DrawStr          ldy   #0
 *=======================================================================
 * DrawMsg - the panel below: the game's message and the credit line
 *=======================================================================
-DrawMsg          _HideCursor
+DrawMsg          PushPtr PuntoMou
+                 _GetMouse
+                 lda   PuntoMou             ; Y first
+                 cmp   #ROOMTOP+8
+                 bcs   :libero              ; pointer is in the room
+                 _HideCursor
                  jsr   DrawMsgReal
                  _ShowCursor
                  rts
+:libero          jmp   DrawMsgReal
 
 DrawMsgReal      stz   FillStart            ; the two rows at the top
                  lda   #ROOMOFF
@@ -12475,6 +14841,7 @@ DrawPannelloReal lda   #PANOFF
                  sta   FillEnd
                  lda   #$0000
                  jsr   FillArea
+                 stz   CredVis
                  jsr   DrawCredit
                  jsr   DrawGuasto
                  jsr   CiSonoVerbi          ; until the game has set up
@@ -12502,8 +14869,11 @@ DrawGuasto       lda   BadOp
                  beq   :niente
                  brl   :guasto
 :niente          lda   DbgOn                ; the room only with the D key
-                 bne   :stanza
+                 bne   :acceso
                  rts
+:acceso          lda   IsZak                ; Maniac keeps the camera line;
+                 beq   :stanza              ; Zak lists actors in the room
+                 brl   DrawDbgZak
 * With debug on, the last line says everything needed to understand the
 * camera: where the player character is, where the camera looks, where it
 * is going, its right-hand limit, who it follows, and the last three
@@ -12571,12 +14941,97 @@ DrawGuasto       lda   BadOp
                  bcc   :copioni
                  rts
 
+*=======================================================================
+* DrawDbgZak - D key line for Zak only: room + actors in it
+*   r<room> <id>:<cost>@<x>,<y>e<elev>f<face> ...
+* Stops before column 35 so DrawStr never wraps off the bottom
+* (wrapping corrupts the SHR scanline control bytes → red stripes).
+*=======================================================================
+DrawDbgZak       stz   TxtX
+                 lda   #DBGTOP
+                 sta   TxtY
+                 lda   #MsgR
+                 jsr   ScriviDbg
+                 lda   CurRoom
+                 jsr   DrawNum
+                 stz   DbgIdx
+:lp              lda   TxtX                 ; a whole actor record still fits
+                 cmp   #20
+                 bcc   :c_e
+                 rts
+:c_e             ldx   DbgIdx
+                 lda   ActRoom,x
+                 cmp   CurRoom
+                 bne   :next
+                 lda   ActCost,x
+                 and   #$00FF
+                 beq   :next
+                 jsr   DbgZakUno
+:next            lda   DbgIdx
+                 clc
+                 adc   #2
+                 sta   DbgIdx
+                 cmp   #NACT*2
+                 bcc   :lp
+                 rts
+
+* One actor from DbgIdx onto the debug line (Zak only).
+DbgZakUno        lda   #MsgSpazio
+                 jsr   ScriviDbg
+                 lda   DbgIdx
+                 lsr   a
+                 jsr   DrawNum
+                 lda   #MsgColon
+                 jsr   ScriviDbg
+                 ldx   DbgIdx
+                 lda   ActCost,x
+                 and   #$00FF
+                 jsr   DrawNum
+                 lda   #MsgAt
+                 jsr   ScriviDbg
+                 ldx   DbgIdx
+                 lda   ActX,x
+                 jsr   DrawNum
+                 lda   #MsgComma
+                 jsr   ScriviDbg
+                 ldx   DbgIdx
+                 lda   ActY,x
+                 jsr   DrawNum
+                 lda   #MsgZe
+                 jsr   ScriviDbg
+                 ldx   DbgIdx
+                 lda   ActElev,x
+                 jsr   DrawNum
+                 lda   #MsgZf
+                 jsr   ScriviDbg
+                 ldx   DbgIdx
+                 lda   ActFace,x
+                 jsr   DrawNum
+* b = the walk box he stands on, k = the mask that box asks for. Those
+* two decide whether the costume is cut against the room's plane, which
+* is what goes wrong on the stairs.
+                 lda   #MsgZb
+                 jsr   ScriviDbg
+                 ldx   DbgIdx
+                 lda   ActBox,x
+                 jsr   DrawNum
+                 lda   #MsgZk
+                 jsr   ScriviDbg
+                 ldx   DbgIdx
+                 lda   ActBox,x
+                 jsr   MascheraCasella
+                 jmp   DrawNum
+
 * The debug labels all live in the same bank: the low word is enough to
 * pick one.
 ScriviDbg        sta   zpStr
+                 lda   TxtX                 ; stop at field boundaries, so a
+                 cmp   #36                  ; long record ends on a whole field
+                 bcs   :pieno                ; instead of a chopped number
                  lda   #^MsgR
                  sta   zpStr+2
                  jmp   DrawStr
+:pieno           rts
 :guasto          stz   TxtX
                  lda   #DBGTOP
                  sta   TxtY
@@ -12609,16 +15064,55 @@ CiSonoVerbi      stz   VerbIdx
 *=======================================================================
 * DrawCredit - who ported it, at the bottom of the screen
 *=======================================================================
-* Only on the title screen: inside the game that line would get in the
-* way of the verb panel.
-DrawCredit       lda   CurRoom
+* Zak: only under the Lucasfilm splash (room 46, camera on the left
+* half). VAR_CAMERA_POS_X is in strips of eight, so 40 is the middle.
+DrawCredit       lda   InCarico             ; not on the black "Loading..."
+                 bne   :no
+                 jsr   CredSi
+                 bcs   :no
+                 jsr   CredDisegna
+                 lda   #1
+                 sta   CredVis
+:no              rts
+
+* Called every frame: keep the splash credit painted (DrawRoom does not
+* touch the panel, but a message or a load can rub it out), and rub it
+* out as soon as the camera leaves the logo.
+AggiornaCredit   lda   InCarico
+                 bne   :off
+                 jsr   CredSi
+                 bcc   :on
+:off             lda   CredVis
+                 beq   :fine
+                 jsr   CredPulisci
+                 stz   CredVis
+                 rts
+:on              jsr   CredDisegna
+                 lda   #1
+                 sta   CredVis
+:fine            rts
+
+CredSi           lda   IsZak
+                 beq   :mm
+                 lda   CurRoom
+                 cmp   #46
+                 bne   :no
+                 lda   Vars+VO_CAMPOS
+                 cmp   #40
+                 bcc   :si
+:no              sec
+                 rts
+:si              clc
+                 rts
+:mm              lda   CurRoom
                  cmp   #45
-                 beq   :forse
+                 bne   :no
+                 jsr   CiSonoVerbi          ; title / kid select: no verbs yet
+                 bcc   :no
+                 clc
                  rts
-:forse           lda   MsgLen               ; comes and goes with the text
-                 bne   :vai                 ; of the game, not on its own
-                 rts
-:vai             lda   #7
+
+CredDisegna      lda   #15
                  jsr   SetTextColor
                  lda   #CRED1TOP
                  sta   TxtY
@@ -12627,8 +15121,34 @@ DrawCredit       lda   CurRoom
                  lda   #MsgCred2
                  jsr   CredRiga
                  lda   #15
+                 jmp   SetTextColor
+
+CredPulisci      lda   #CRED1TOP*SCRW
+                 sta   FillStart
+                 lda   #DBGTOP*SCRW
+                 sta   FillEnd
+                 lda   #$0000
+                 jmp   FillArea
+
+* Why the game did not start, when 00.LFL is not one we can play.
+IdxMsg           lda   #15
                  jsr   SetTextColor
-                 rts
+                 lda   #80
+                 sta   TxtY
+                 lda   IdxV1
+                 beq   :altro
+                 lda   #MsgIdxV1a
+                 jsr   CredRiga
+                 lda   #MsgIdxV1b
+                 bra   :tasto
+:altro           lda   #MsgIdxErr
+:tasto           jsr   CredRiga
+                 lda   TxtY
+                 clc
+                 adc   #8
+                 sta   TxtY
+                 lda   #MsgIdxTasto
+                 jmp   CredRiga
 
 * A = one credit line in this bank: centred at TxtY, then one row down.
 CredRiga         sta   zpStr
@@ -12657,7 +15177,7 @@ FondoMsg         stz   VerbIdx
                  sta   VerbIdx
                  cmp   #NVERBS*2
                  bcc   :lp
-                 lda   #CRED1TOP            ; no verbs: there is room
+                 lda   #INVTOP              ; no verbs: there is room
                  rts
 :cisono          lda   #VERBTOP
                  rts
@@ -12693,6 +15213,8 @@ DrawStrWrap      ldy   #0
                  beq   :fine
                  cmp   #$000A
                  bne   :normale
+                 lda   TxtX                 ; a 40-char line has already
+                 beq   :avanti              ; wrapped: do not skip a row
                  stz   TxtX
                  lda   TxtY
                  clc
@@ -12818,6 +15340,13 @@ Bye              jsl   $E100A8
                  dw    QuitGS
                  adrl  QuitParm
                  brk   $00
+
+* Costume 31 pointing cel +104 with a solid armpit (see PatchCost31Arm).
+Cel31Arm         hex   1400160042001e00000000000a620a0961e2610909e3610909e3611108036611
+                 hex   e26111080162e611e261110861e811e2611101130461e811e2611603e911e261
+                 hex   1603ea11e161160361e911e161160361ea1161160301ea116116030261e26111
+                 hex   e411611603036311e411611601120a11e1611441c1130a11e1011201c4120961
+                 hex   e2011103c3120ae107c2020016
 
 *=======================================================================
 QuitParm         dw    $0002
@@ -12963,6 +15492,7 @@ FrecciaCur       dw    16                   ; rows
 
 MsgR             asc   'r'
                  dfb   0
+                 dfb   0
 MsgX             asc   ' x'
                  dfb   0
 MsgC             asc   ' c'
@@ -12985,21 +15515,42 @@ MsgK             asc   ' k'
                  dfb   0
 MsgSpazio        asc   ' '
                  dfb   0
+* Zak D-debug separators (same bank as MsgR for ScriviDbg)
+MsgColon         asc   ':'
+                 dfb   0
+MsgAt            asc   '@'
+                 dfb   0
+MsgComma         asc   ','
+                 dfb   0
+MsgZe            asc   'e'
+                 dfb   0
+MsgZb            asc   ' b'
+                 dfb   0
+MsgZk            asc   ' k'
+                 dfb   0
+MsgZf            asc   'f'
+                 dfb   0
+MsgZo            asc   'o'
+                 dfb   0
 MsgRoom          asc   'room '
                  dfb   0
 MsgBad           asc   'unknown opcode: '
                  dfb   0
-MsgIIGS          asc   '        Apple IIGS porting by'
-                 hex   0A
-                 asc   '          Michele Di Paola'
+MsgIIGS          asc   'IIGS porting by Michele Di Paola'
                  hex   00
-MsgMusica        asc   '         Apple IIGS music by'
-                 hex   0A
-                 asc   '      . . . . . . . . . . . .'
+MsgMusica        asc   '........................'
                  hex   00
 MsgCred1         asc   'SCUMMv2 interpreter for Apple IIGS'
                  dfb   0
 MsgCred2         asc   'by Michele Di Paola'
+                 dfb   0
+MsgIdxV1a        asc   'These are SCUMM V1 game files:'
+                 dfb   0
+MsgIdxV1b        asc   'only V2 is supported for now.'
+                 dfb   0
+MsgIdxErr        asc   'L00.LFL is not a SCUMM V2 index.'
+                 dfb   0
+MsgIdxTasto      asc   'Press a key to quit.'
                  dfb   0
 MsgLoad          asc   'Loading...'
                  dfb   0
@@ -13217,9 +15768,9 @@ CaricaPos        jsr   ApriPosR
 :chiudimale      jsr   ChiudiPos
                  sec
                  rts
-:finito          jsr   ChiudiPos
+:finito                           jsr   ChiudiPos
                  jsr   RiattivaScript       ; and the scripts start again
-                 lda   #SCR_VERBI           ; the verb panel the screen
+                 lda   ScrVerbi             ; the verb panel the screen
                  jsr   StartScript          ; had wiped
                  clc
                  rts
@@ -13512,7 +16063,7 @@ ChiudiPos        jsl   $E100A8
 Firma            asc   'SCUMMGS2'
 
 OpTab            anop
-                 dw    hStop,hPutActor,hStartSound,hActorRoom   ; $00
+                 dw    hStop,hPutActor,hStartMusic,hActorRoom   ; $00
                  dw    hUnless,hDrawObject,hResB,hSetState   ; $04
                  dw    hUnless,hFaceActor,hMoveInd,hObjPrep   ; $08
                  dw    hRes,hWalkActor,hPutAtObj,hUnlessState   ; $0C
@@ -13527,7 +16078,7 @@ OpTab            anop
                  dw    hBoxFlags,hGetBit,hSetCamera,hRoomOps   ; $30
                  dw    hGetDist,hFindObject,hWalkToObj,hSetState   ; $34
                  dw    hUnless,hSentence,hSub,hWaitActor   ; $38
-                 dw    hStopSound,hDueB,hWalkTo,hUnlessState   ; $3C
+                 dw    hStopSound,hSetElev,hWalkTo,hUnlessState   ; $3C
                  dw    hCutscene,hPutActor,hStartScript,hGetActX   ; $40
                  dw    hUnless,hDrawObject,hInc,hClearState   ; $44
                  dw    hUnless,hFaceActor,hChainScript,hObjPrep   ; $48
@@ -13544,7 +16095,7 @@ OpTab            anop
                  dw    hGetDist,hFindObject,hWalkToObj,hClearState   ; $74
                  dw    hUnless,hSentence,hVerbOps,hGetBox   ; $78
                  dw    hIsSound,hDueB,hWalkTo,hUnlessState   ; $7C
-                 dw    hBreak,hPutActor,hStartSound,hActorRoom   ; $80
+                 dw    hBreak,hPutActor,hStartMusic,hActorRoom   ; $80
                  dw    hUnless,hDrawObject,hResB,hSetState   ; $84
                  dw    hUnless,hFaceActor,hMoveInd,hObjPrep   ; $88
                  dw    hRes,hWalkActor,hPutAtObj,hUnlessState   ; $8C
@@ -13559,7 +16110,7 @@ OpTab            anop
                  dw    hBoxFlags,hGetBit,hSetCamera,hRoomOps   ; $B0
                  dw    hGetDist,hFindObject,hWalkToObj,hSetState   ; $B4
                  dw    hUnless,hSentence,hSub,hWaitActor   ; $B8
-                 dw    hStopSound,hDueB,hWalkTo,hUnlessState   ; $BC
+                 dw    hStopSound,hSetElev,hWalkTo,hUnlessState   ; $BC
                  dw    hEndCut,hPutActor,hStartScript,hGetActX   ; $C0
                  dw    hUnless,hDrawObject,hInc,hClearState   ; $C4
                  dw    hUnless,hFaceActor,hChainScript,hObjPrep   ; $C8
@@ -13598,6 +16149,11 @@ Size             ds    4
 
 FileNo           ds    2
 RawLen           ds    2
+IdxV1            ds    2      ; 00.LFL is a SCUMM V1 index
+InCarico         ds    2      ; 1 while the black "Loading..." is up
+IsZak            ds    2      ; the game is Zak McKracken
+ScrVerbi         ds    2      ; script that rebuilds verbs after save screen
+CredVis          ds    2      ; the splash credit is on the panel
 IdxPos           ds    2
 TabN             ds    2
 TabMax           ds    2
@@ -13648,6 +16204,7 @@ BitN             ds    2
 Capo             ds    CAPOLEN
 CutRoom          ds    2      ; the room before a cutscene
 CutCam           ds    2
+CutLiv           ds    2      ; nested cutscene() count; ESC must not quit
 PadreCd          ds    2      ; walking an object's parent chain
 PadreNo          ds    2
 PadreMask        ds    2
@@ -13715,7 +16272,14 @@ DistQ            ds    2      ; the x difference, while y is measured
 BuioStato        ds    2      ; how it was lit last time
 DaComporre       ds    2      ; the room is decoded but not composed
 DbgIdx           ds    2      ; the slot the debug line is at
+DbgObjN          ds    2      ; room object count while listing lit ones
 MaskSrc          ds    2      ; where the room's own mask begins
+MascLen          ds    2      ; bytes in one mask plane for this room
+Masc0Room        ds    2      ; the room whose clean mask zpMask0 holds
+MascC1           ds    2      ; first and last byte column of the piece
+MascNb           ds    2
+MascY            ds    2
+MascRett         ds    2      ; RidisegnaRett also stamps object masks
 Alive            ds    2
 Tick             ds    4
 LastTick         ds    2
@@ -13725,8 +16289,19 @@ DirtyX           ds    2
 DirtyY           ds    2
 DirtyR           ds    2                    ; right edge
 DirtyB           ds    2                    ; bottom edge
+DirtyN           ds    2                    ; how many dirty rectangles
+DirtyI           ds    2
+DirtyXs          ds    8
+DirtyYs          ds    8
+DirtyRs          ds    8
+DirtyBs          ds    8
 
 ObjConfine       ds    2                    ; the pictures end here
+ImgArea          ds    2                    ; w*h cells for ImgGemella
+ImgOurW          ds    2                    ; our width in cells
+ImgOurH          ds    2                    ; our height in cells
+CalcA            ds    2
+CalcB            ds    2
 ConfN            ds    2
 ConfI            ds    2
 
@@ -13756,6 +16331,7 @@ CamMode          ds    2
 CamFollow        ds    2
 CamGo            ds    2
 CutCursor        ds    2
+CutIface         ds    2      ; panel bits saved across a cutscene
 DbgOn            ds    2
 RndSeed          ds    2
 RndX             ds    2
@@ -13784,6 +16360,7 @@ VerbLast         ds    2
 MsgDopo          ds    2
 BoxOff           ds    2
 NumBox           ds    2
+BoxLockOk        ds    2                    ; 1: locked+walk, 2: locked only
 BoxPtr           ds    2
 BoxUy            ds    2
 BoxLy            ds    2
@@ -13909,6 +16486,8 @@ DecVal           ds    2
 DecHun           ds    2
 DecTen           ds    2
 MsgLen           ds    2
+MsgKeep          ds    2      ; the last print ended with code 2
+MsgDa            ds    2      ; where this print's own letters begin
 MsgNew           ds    2
 MsgTimer         ds    2
 MsgText          ds    {240}+2
@@ -13933,7 +16512,7 @@ VerbX            ds    {16}*2
 VerbY            ds    {16}*2
 VerbW            ds    {16}*2
 VerbOn           ds    {16}*2
-VerbName         ds    {16}*12
+VerbName         ds    {16}*VERBNAME
 VerbsDirty       ds    2
 VerbIdx          ds    2
 VerbXT           ds    2
@@ -13943,6 +16522,8 @@ VerbHover        ds    2                    ; the verb under the pointer, plus o
 VerbHoverLast    ds    2
 SentHotLast      ds    2
 InvHotLast       ds    2
+HoverNow         ds    2
+BestArea         ds    2
 PtoX             ds    2                    ; the point to look for a verb at
 PtoY             ds    2
 PuntoMou         ds    4                    ; where the IIGS writes the pointer
@@ -13958,6 +16539,8 @@ MouseX           ds    2
 MouseY           ds    2
 FindX            ds    2
 FindY            ds    2
+HitId            ds    2
+HitW             ds    2
 ObjFound         ds    2
 ObjCd            ds    2
 VerbWanted       ds    2
@@ -14007,6 +16590,21 @@ CelRow           ds    2
 CelPx            ds    2
 CelRun           ds    2
 CelColor         ds    2
+CelSkip          ds    2      ; 1 = this run is the file's colour 0
+CelBuf           ds    128    ; one column of that cel, file colours
+HatClip          ds    2      ; Zak costume 31: 18x22 flying hat (HatRowSkip)
+HatPal6          ds    2      ; saved DrawPal[6] while painting the hat
+TvSoftMask       ds    2      ; Zak room 2 TV: punch mask in glass only
+TvSoftX1         ds    2
+TvSoftX2         ds    2
+TvSoftY1         ds    2
+TvSoftY2         ds    2
+SoftY            ds    2      ; scanline while punching TV mask
+SkipCloud8       ds    2      ; Zak room 49: object colour 8 = transparent
+RigaX            ds    2      ; the row inside the block, counted in words
+RigaXF           ds    2
+FineTratto       ds    2
+FatteOra         ds    2
 XMove            ds    2
 YMove            ds    2
 CostWant         ds    2
@@ -14017,17 +16615,21 @@ CostNum          ds    {6}*2
 ActRoom          ds    {25}*2
 ActX             ds    {25}*2
 ActY             ds    {25}*2
+ActElev          ds    {25}*2
 ActCost          ds    {25}*2
 ActFace          ds    {25}*2
 ActFrame         ds    {25}*2
 ActVis           ds    {25}*2
 ActTalk          ds    {25}*2
+ActPal           ds    {25}*16            ; actorOps Color remap
+DrawPal          ds    16                 ; that table, ready to draw with
 ActDstX          ds    {25}*2
 ActDstY          ds    {25}*2
 ActMoving        ds    {25}*2
 ActErr           ds    {25}*2
 ActOldX          ds    {25}*2
 ActOldY          ds    {25}*2
+ActStuck         ds    {25}*2     ; frames spent walking without moving
 ActBX1           ds    {25}*2
 ActBY1           ds    {25}*2
 ActBX2           ds    {25}*2
@@ -14046,8 +16648,8 @@ RigaScr          ds    2
 ContaB           ds    2
 SentSub          ds    2
 
-DitLo            ds    {128}
-DitHi            ds    {128}
+DitLo            ds    {128}*2             ; a word apart, so the row index
+DitHi            ds    {128}*2             ; serves for RowOff as well
 RowOff           ds    {128}*2
 MaskRow          ds    {128}*2              ; the same table, for the mask
 ActName          ds    {25}*16              ; what the characters are called
@@ -14127,6 +16729,8 @@ SndDP            ds    2
 PlayingId        ds    2
 SndWant          ds    2
 SndWaitT         ds    2
+MusFinta         ds    2      ; no score playing: the timer counts seconds
+MusFintaT        ds    2      ; ticks towards the next second
 SndWaitId        ds    2
 SndLen           ds    2
 SndLoop          ds    2

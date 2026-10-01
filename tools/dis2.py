@@ -514,6 +514,10 @@ class Dis:
                     errori.append(f"${self.base + pc:04X}: {e}")
                     break
                 viste[pc] = ins
+                if ins.nome == 'beginOverride':
+                    # the goto after it is where ESC lands; the scene
+                    # itself goes on past that goto
+                    da_fare.append(pc + ins.size + 3)
                 if ins.salto is not None:
                     dest = ins.salto - self.base
                     if 0 <= dest <= len(self.data):

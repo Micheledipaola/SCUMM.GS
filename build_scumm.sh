@@ -38,11 +38,42 @@ else
   echo "==> font: src/fontdata.s"
 fi
 
-mkdir -p build
+DISK="$ROOT/../SCUMM.2mg"
+# Save games are SAVE0..SAVE9 next to the LFL files (MM/ or ZAK/).
+# CREATEVOLUME wipes the volume, so pull them off first and put them back.
+KEEP_SAVES="$ROOT/keep_saves"
+preserve_saves() {
+  local img="$1"
+  [ -f "$img" ] || return 0
+  command -v "$CADIUS" >/dev/null 2>&1 || return 0
+  mkdir -p "$KEEP_SAVES/MM" "$KEEP_SAVES/ZAK"
+  local tmp="$ROOT/.save_extract"
+  rm -rf "$tmp"
+  mkdir -p "$tmp"
+  echo "==> keep saves from $(basename "$img")"
+  local g slot
+  for g in MM ZAK; do
+    for slot in 0 1 2 3 4 5 6 7 8 9; do
+      rm -rf "$tmp"/*
+      if "$CADIUS" EXTRACTFILE "$img" "/SCUMM/$g/SAVE$slot" "$tmp" >/dev/null 2>&1; then
+        # Cadius names the file SAVE0#xxxxxx; keep a plain SAVE0 for staging.
+        local f
+        f=$(find "$tmp" -maxdepth 1 -type f \( -name "SAVE$slot" -o -name "SAVE$slot#*" \) | head -1)
+        if [ -n "$f" ]; then
+          cp "$f" "$KEEP_SAVES/$g/SAVE$slot"
+          echo "    $g/SAVE$slot"
+        fi
+      fi
+    done
+  done
+  rm -rf "$tmp"
+}
 
 echo "==> 65816 assembly"
 # Merlin32 v1.2: merlin32 [-V] <macro_folder> <source>
 "$MERLIN32" -V "$MACRO_DIR" "$ROOT/src/scumm.s"
+
+preserve_saves "$DISK"
 
 echo "==> disk"
 rm -rf stage build/SCUMM.2mg
@@ -59,6 +90,21 @@ shopt -u nullglob
 if ! ls stage/MM/L??.LFL >/dev/null 2>&1; then
   echo "No .LFL files in $SRC" >&2
   exit 1
+fi
+
+ZAK="${ZAK:-/Users/Michele/EMU/IIGS/out/ZakEnh}"
+if [ -d "$ZAK" ]; then
+  echo "==> Zak: $ZAK"
+  mkdir -p stage/ZAK
+  for f in "$ZAK"/*; do
+    n=$(basename "$f")
+    [[ "$n" =~ ^L?([0-9][0-9])\.[Ll][Ff][Ll]$ ]] || continue
+    cp "$f" "stage/ZAK/L${BASH_REMATCH[1]}.LFL"
+  done
+  # Costume 31 cel +104 side hat: clear the colour-1 bar under the brim
+  # (blob over the glasses stems). Staged LFL only.
+  echo "==> Zak: punch costume 31 hat stem-blob"
+  python3 "$ROOT/tools/patch_zak_arm.py" stage/ZAK "$ZAK"
 fi
 
 echo "==> Amiga SFX (no music), GSFX banks"
@@ -79,21 +125,46 @@ cp "$ROOT/icons/SCUMM" stage/Icons/SCUMM
 echo "SCUMM=Type(CA),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)" \
   > stage/Icons/_FileInformation.txt
 
+# Put saved games back into the staged folders (MM and/or ZAK).
+restored=0
+for g in MM ZAK; do
+  [ -d "$KEEP_SAVES/$g" ] || continue
+  [ -d "stage/$g" ] || continue
+  shopt -s nullglob
+  for f in "$KEEP_SAVES/$g"/SAVE[0-9]; do
+    cp "$f" "stage/$g/"
+    restored=$((restored + 1))
+  done
+  shopt -u nullglob
+done
+if [ "$restored" -gt 0 ]; then
+  echo "==> restore $restored save(s) onto the new disk"
+fi
+
 echo "SCUMM=Type(B3),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)" \
   > stage/_FileInformation.txt
-for f in stage/MM/L??.LFL stage/MM/SFX* stage/MM/MUS*; do
+for f in stage/MM/L??.LFL stage/MM/SFX* stage/MM/MUS* stage/MM/SAVE[0-9]; do
   [ -f "$f" ] || continue
   echo "$(basename "$f")=Type(06),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)"
 done > stage/MM/_FileInformation.txt
+if [ -d stage/ZAK ]; then
+  for f in stage/ZAK/L??.LFL stage/ZAK/SAVE[0-9]; do
+    [ -f "$f" ] || continue
+    echo "$(basename "$f")=Type(06),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)"
+  done > stage/ZAK/_FileInformation.txt
+fi
 
 if command -v "$CADIUS" >/dev/null 2>&1; then
-  "$CADIUS" CREATEVOLUME build/SCUMM.2mg SCUMM 1600KB >/dev/null
+  "$CADIUS" CREATEVOLUME build/SCUMM.2mg SCUMM 3200KB >/dev/null
+  "$CADIUS" CREATEVOLUME "$DISK" SCUMM 3200KB >/dev/null
+  "$CADIUS" ADDFOLDER "$DISK" /SCUMM/ ./stage >/dev/null
+  # Same contents in build/ so a GS that mounts that image is not empty.
   "$CADIUS" ADDFOLDER build/SCUMM.2mg /SCUMM/ ./stage >/dev/null
-  "$CADIUS" CATALOG build/SCUMM.2mg | tail -3
+  "$CADIUS" CATALOG "$DISK" | tail -3
 else
   echo "==> cadius not in PATH, packing with tools/make_2mg.py"
-  python3 tools/make_2mg.py build/SCUMM.2mg stage
+  python3 tools/make_2mg.py "$DISK" stage
 fi
 
 echo
-echo "Done: build/SCUMM.2mg"
+echo "Done: $DISK"

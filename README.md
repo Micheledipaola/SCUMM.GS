@@ -12,23 +12,54 @@ and debug it.
 
 ## Status
 
-Playable. Maniac Mansion runs from the title screen into the mansion: rooms, walking
-with pathfinding, actors with their costume animations, objects and their states,
-the verb panel and the inventory, the sentence line, dialogue with the mouth moving,
-scrolling rooms with the camera following, dark rooms with the flashlight, Amiga
-sound effects (no music), and saving and loading through the game's own save screen.
+**Maniac Mansion** is playable from the title screen into the mansion: rooms,
+walking with pathfinding, actors with their costume animations, objects and
+their states, the verb panel and the inventory, the sentence line, dialogue
+with the mouth moving, scrolling rooms with the camera following, dark rooms
+with the flashlight, Amiga sound effects (no music), and saving and loading
+through the game's own save screen.
 
 The Amiga release works too, from files taken off its own floppies with
-`tools/adf.py`: same index, byte-identical bytecode, and the same picture decoder
-reads its rooms. Its room files are half again as large, which is all the engine
-needed to be told. Sound comes from those Amiga samples, packed for the IIGS DOC;
-the music tracks in the same files are skipped.
+`tools/adf.py`: same index, byte-identical bytecode, and the same picture
+decoder reads its rooms. Its room files are half again as large, which is all
+the engine needed to be told. Sound comes from those Amiga samples, packed for
+the IIGS DOC; the music tracks in the same files are skipped.
 
 ESC skips a cutscene when the script allowed it, Q asks before quitting, Space
-pauses, Apple-8 asks before restarting.
+pauses, Apple-8 asks before restarting. The boot dialog picks which game to
+load when both are on the disk.
 
-A few opcodes the game has not needed yet are still stubs. Zak McKracken uses the
-same V2 files but has not been tried; later SCUMM games are a different engine.
+**Zak McKracken** (enhanced V2 / ZakEnh) is the current focus and runs on the
+same interpreter. The game is selected when the index has 155 global scripts
+(`IsZak`); Zak-only behaviour stays behind that flag so Maniac is not disturbed.
+
+What works on Zak today, beyond the shared V2 core:
+
+- Intro, office, dream (room 49), living room and the early game path
+- ESC in Zak can clear delays / stop walks and skip the office cutscene where
+  the scripts allow it (Maniac ESC is still jump-to-override only)
+- Costumes up to 8K per slot — needed for Melissa's TV hood (costume 3, limb
+  L6) which a 4K limit truncated
+- TV “LIVE” broadcast: Melissa (and Annie) stay inside the glass; soft mask and
+  room-relative placement; when Melissa turns while talking, the hood is kept
+  (talk overwrites `ActFrame`, so the turn path re-applies chore 8 from L6's
+  `CostFrm`)
+- Dream flying hat (costume 31): side-view glasses stems visible without the
+  black under-brim blob; front view keeps the full fake nose. The staged LFL
+  punches the side-hat bar; runtime `HatClip` / per-pixel skip covers the rest
+- Actor palette quirks (Zak's black suit, costume 31 glasses black, aliens)
+- Room-49 object draw order / colour-8 so the pointing body does not wipe the arm
+- Apartment doorway (room 3): the character is cut by the door frame on the way
+  down the stairs, and walks out into the street
+- Credits verb lines long enough for Zak's text; hover highlight on those lines
+- D-key debug line for Zak: room and actors (`id:cost@x,ye…f…`)
+
+Still open on Zak: music (only Amiga SFX banks are packed), further room and
+costume polish as playthrough finds them, and anything that would need a
+global engine change without an `IsZak` guard. Later SCUMM versions remain a
+different engine.
+
+A few opcodes neither game has needed yet are still stubs.
 
 ## Building
 
@@ -38,17 +69,23 @@ You need:
   cross-assembler, from Brutal Deluxe
 - **[Cadius](https://github.com/mach-kernel/cadius)** — to build the ProDOS disk image
 - your own copy of the game's `.LFL` files, in a folder (default: `data/`)
+- optionally Zak enhanced LFL files: set `ZAK` to that folder (the build
+  script defaults to a local ZakEnh path when `ZAK` is unset)
 - optionally an Amiga Maniac disk image, so the build can pack SFX
   (`AMIGA_2MG`, default `../altri SCUMM/SCUMM-AMIGA.2mg` next to this repo)
 
 ```sh
 ./build_scumm.sh /path/to/your/LFL/files
+# or, with Maniac in data/ and Zak next to the repo:
+./build_scumm.sh data
 ```
 
-The result is `build/SCUMM.2mg`, a 1600 KB ProDOS image holding the interpreter,
-the game's own files (as `MM/L00.LFL` …), and if the Amiga image was found the
+The result is `../SCUMM.2mg` (next to this repo, where GSplus loads it), a
+3200 KB ProDOS image holding the interpreter, Maniac as `MM/L00.LFL` …, Zak as
+`ZAK/L00.LFL` … when `ZAK` was found, and if the Amiga image was present the
 SFX banks (`MM/SFXI`, `MM/SFX0` …). It boots on a real IIGS (ROM01 and ROM03)
-and under [GSplus](https://github.com/digarok/gsplus).
+and under [GSplus](https://github.com/digarok/gsplus). Cold-quit the emulator
+before relaunching after a rebuild, or it keeps the old binary in RAM.
 
 ### The font
 
@@ -131,6 +168,67 @@ runs, so the decoder now writes a whole run before fetching the next byte;
 costume pixels walk `Pitch` instead of recomputing `RowOff` every pixel;
 erasing an actor copies with `MVN` when the row stays in one bank.
 
+## Characters, and what the background hides
+
+A V2 room carries one more plane after its picture: one bit per pixel, saying
+which background pixels are drawn in front of the characters. Each walk box
+names whether the box it describes uses that plane, so a character standing
+behind the bakery counter is cut against it and one standing in the street is
+not.
+
+Getting that right in Zak's street took finding a mistake that had been hiding
+behind three workarounds. The actor's anchor is its x times eight — the V2
+scale — and the cel's own offset is added to that; a mirrored cel is laid out
+backwards from the same anchor. The engine was adding a further eight pixels on
+top, sixteen when the character faced left, which moved every Zak sprite a whole
+strip to the right. In the apartment doorway of room 3 that was the difference
+between standing in the opening and standing behind the right-hand jamb, where
+the walk-behind plane is solid: the mask ate all but a sliver of him, and the
+sliver is what you saw.
+
+The proof is not a screenshot. Left and right are the same drawing mirrored, so
+their two x ranges must be symmetric about the anchor. With the extra eight they
+were not; without it they are, to the pixel. Removing it took three workarounds
+with it — the blanket "no walk-behind in room 3", the window of cells that forced
+it off, and the exception that cancelled the extra eight for the living-room
+television.
+
+## What a frame costs
+
+Composing a room means putting the decoded background back, drawing every lit
+object on top of it, rebuilding the mask plane, and then drawing the characters.
+It is what has to happen when the room changes or the lights do. It was also
+what happened every time any object changed state, because an object that goes
+out must stop hiding people, and the mask was rebuilt by decoding the whole
+room's plane again.
+
+In the aliens' room, where screens and buttons animate continuously, that was
+measured at **78.6%** of all the time the interpreter spent: 34.6% copying the
+51200 bytes of the picture back, 30.9% running the mask's run-length stream
+again, for one button lighting up.
+
+Two changes. The room's own mask is decoded once and kept, so rebuilding it is a
+block move rather than a decode. And an object that changes state now has its own
+rectangle put back — the clean mask for that square, then the masks of the lit
+objects that touch it — instead of the whole room.
+
+The test for that is an equality, not an eye: for every object in a room, the
+incremental update must leave the mask plane and the picture byte-for-byte
+identical to what a full compose produces. 115 objects across both games, no
+difference. Measured in passes through the main loop for the same work:
+
+| | before | after |
+|---|---|---|
+| Zak, aliens' room | 17 | 102 |
+| Zak, room 3 doorway | 9 | 1128 |
+
+The second number is larger because that room was also recomposing itself on
+every pass through the main loop, which was one of the workarounds above.
+
+Text is clamped at the last column as well. A glyph written at column 40 lands on
+the next scanline's SHR control bytes and paints red stripes across the panel, so
+`DrawChar` refuses rather than trusting every caller to count.
+
 ## The tools
 
 Everything under `tools/` is Python, and none of it runs on the IIGS — it exists to
@@ -151,6 +249,7 @@ understand the data and to find mistakes in seconds instead of one disk at a tim
 | `font_mm.py` | finds the game's own font inside its program, whichever release |
 | `adf.py` | reads files out of an Amiga floppy image, for the Amiga release |
 | `sfx_amiga.py` | packs Amiga V2 sound effects into GSFX banks for the IIGS (no music) |
+| `patch_zak_arm.py` | staged-only punch of Zak costume 31 side-hat blob pixels |
 
 The emulator is the reason this got anywhere. It boots the real interpreter, feeds it
 the real game files, lets a test click on things and hands back the video memory as a
@@ -174,6 +273,9 @@ Labels and local symbols are still in Italian in places; the comments are not.
 
 A handful of sound timings (the intro comet, the Start beep, door clicks) are
 tuned to Maniac Mansion's objects and scripts, not to a generic V2 table.
+
+Zak-only paths go through `IsZak` (or a script only Zak runs). Do not “try it
+on Maniac” as a side effect of a Zak fix until there is an explicit MM pass.
 
 ## Credits and licence
 
