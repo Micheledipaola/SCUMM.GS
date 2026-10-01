@@ -7233,6 +7233,33 @@ MarcaToccatiDaAgg lda  ActIdx
                  sta   ActIdx
                  rts
 
+* Like MarcaToccatiDaAgg but with nobody left out: for a piece of room
+* that changed on its own (an object lighting up), not for a character
+* who moved.
+MarcaToccatiTutti lda  ActIdx
+                 pha
+                 stz   ActScan
+:lp              lda   ActScan
+                 sta   ActIdx
+                 jsr   AttoreInScena
+                 bcs   :avanti
+                 jsr   ScatolaVecchia
+                 bcs   :avanti
+                 jsr   IntersecaAgg
+                 bcs   :avanti
+                 ldx   ActScan
+                 lda   #1
+                 sta   ActSporco,x
+:avanti          lda   ActScan
+                 clc
+                 adc   #2
+                 sta   ActScan
+                 cmp   #NACT*2
+                 bcc   :lp
+                 pla
+                 sta   ActIdx
+                 rts
+
 * Carry set if Dst rectangle misses Agg.
 IntersecaAgg     lda   DstX
                  cmp   AggR
@@ -9502,8 +9529,7 @@ LeggiObj         lda   #28                  ; the first table holds the
 * object lays its own mask down as well, it sprays the mask plane with
 * nonsense: whoever walks past comes out full of holes. So: a picture
 * that does not begin before the descriptions is not a picture.
-                 jsr   ConfineImmagini
-                 lda   ObjImgOff
+                 lda   ObjImgOff            ; ObjConfine: set by DecodeRoom
                  cmp   ObjConfine
                  bcc   :inconfine
                  brl   :esci
@@ -9803,15 +9829,29 @@ NeroRett         lda   BlkW
 * The object is the one in ObjNo: it is copied into ObjFound too, which
 * is where TrovaOggetto reads. Without this, callers coming from
 * setState/clearState ended up redrawing the last object that passed by.
+* The object's own square is redrawn here. When that cannot be done -
+* the object is not in this room, or has no picture of its own - the
+* whole room is composed again instead.
+*
+* That fallback matters. Before, every state change ended in a full
+* compose, so an object that this routine could not draw was picked up
+* by the next one anywhere in the room. Without it, such an object would
+* simply never appear again, which is a worse bug than a slow frame.
 AggiornaOggetto  lda   RoomH
                  beq   :fine
                  lda   ObjNo
                  sta   ObjFound
                  jsr   TrovaOggetto
-                 bcs   :fine
+                 bcs   :tutta
                  jsr   LeggiObj
-                 bcs   :fine
-                 jsr   PuliscoRett
+                 bcc   :posso
+:tutta           lda   #1
+                 sta   DaComporre
+                 lda   #1
+                 sta   ActDirty
+                 sta   ActTutti
+                 rts
+:posso           jsr   PuliscoRett
 
                  lda   DstX                 ; the piece of room that was
                  sta   AggX                 ; just put back as it was
@@ -9837,11 +9877,13 @@ AggiornaOggetto  lda   RoomH
                  jsr   RidisegnaRett
                  stz   MascRett
 * There may be a character under that object: putting the background
-* back has just erased his legs. Flagging the actors as needing a redraw
-* makes the next frame draw them again and put them right.
+* back has just erased his legs. Only the ones the square actually
+* touches, though. ActTutti repainted every costume in the room on every
+* object state change, so in the kitchen three characters were redrawn
+* for each frame of what the television was showing.
+                 jsr   MarcaToccatiTutti
                  lda   #1
                  sta   ActDirty
-                 sta   ActTutti
 
                  lda   AggX                 ; what goes to the screen is that
                  sta   DstX                 ; piece, not the last object
@@ -13389,7 +13431,14 @@ EseguiUscita     ldy   #$18
 *=======================================================================
 * DecodeRoom - the background, the clean copy, and the lit objects on top
 *=======================================================================
-DecodeRoom       ldy   #4
+* Where this room's pictures stop and its descriptions begin depends on
+* the room and on nothing else, so it is worked out here, once. It used
+* to be worked out inside LeggiObj, which RidisegnaRett calls for every
+* object in the room, and ConfineImmagini scans every object in turn:
+* redrawing one rectangle was quadratic in the number of objects, and in
+* the aliens' room that scan was most of the frame.
+DecodeRoom       jsr   ConfineImmagini
+                 ldy   #4
                  lda   [zpRaw],y
                  sta   RoomW
                  ldy   #6
@@ -14154,6 +14203,25 @@ DecodeRLE        lda   zpRaw
                  and   #1
                  sta   Dispari
 
+* Whether a column falls outside the piece being redone depends on the
+* column, not on the pixel: decided here, once, instead of twice per
+* pixel down the whole object. Redrawing the background under a walking
+* character clips every object it touches, and most of their columns are
+* outside - that test was the larger half of the decode.
+                 stz   ColFuori
+                 lda   ClipOn
+                 beq   :dentrox
+                 lda   ColX
+                 clc
+                 adc   DstX
+                 cmp   ClipX1
+                 bcc   :fuorix
+                 cmp   ClipX2
+                 bcc   :dentrox
+:fuorix          lda   #1
+                 sta   ColFuori
+:dentrox         anop
+
 * Clipping and the Zak cloud both need a decision per pixel, and both
 * happen on small pieces: they go the slow way. Everything else - the
 * rooms, the costumes, every object drawn whole - takes the loops below.
@@ -14290,13 +14358,8 @@ DecodeRLE        lda   zpRaw
 * over the patches that were covering them.
 :usatab          lda   ClipOn
                  beq   :scrivi
-                 lda   ColX
-                 clc
-                 adc   DstX
-                 cmp   ClipX1
-                 bcc   :niente
-                 cmp   ClipX2
-                 bcs   :niente
+                 lda   ColFuori
+                 bne   :niente
                  lda   Riga
                  clc
                  adc   DstY
@@ -16210,6 +16273,7 @@ PadreNo          ds    2
 PadreMask        ds    2
 PadreLen         ds    2
 ClipOn           ds    2      ; draw only inside the rectangle
+ColFuori         ds    2      ; this column is outside it altogether
 ClipX1           ds    2
 ClipX2           ds    2
 ClipY1           ds    2
