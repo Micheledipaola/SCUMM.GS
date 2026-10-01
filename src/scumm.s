@@ -3962,9 +3962,23 @@ DrawActor        rep   #$30
                  bra   :hobox
 :usatmp          lda   TmpW
 :hobox           sta   TmpW                 ; keep box number
+* The box says whether the background covers this character. Stepping
+* through a door or a window he is outside every box for a frame or two,
+* and losing the box must not be read as "nothing covers him": the baker
+* going back in through his window flashed over the bakery door that is
+* supposed to hide him. Keep the mask he had until he stands somewhere
+* again. ScummVM does the same by never letting a walkbox go invalid.
 :domask          lda   TmpW
-                 jsr   MascheraCasella
+                 cmp   NumBox
+                 bcc   :boxbuona
+                 ldx   ActIdx
+                 lda   ActMasc,x
                  sta   MascAtt
+                 bra   :senza
+:boxbuona        jsr   MascheraCasella
+                 sta   MascAtt
+                 ldx   ActIdx
+                 sta   ActMasc,x
 
 :senza           ldx   ActIdx
                  lda   ActCost,x
@@ -4429,13 +4443,8 @@ HatRowSkip       lda   HatClip
 
 * TvMaskPunch - carry clear: paint through walkbehind inside the TV glass.
 * Only overrides a set mask bit; never skips pixels outside the rect.
-TvMaskPunch      lda   TvSoftMask
-                 beq   :tno
-                 lda   CelPx
-                 cmp   TvSoftX1
-                 bcc   :tno
-                 cmp   TvSoftX2
-                 bcs   :tno
+TvMaskPunch      lda   TvColOk              ; the column was tested once, at
+                 beq   :tno                 ; the top of CelRunMask
                  lda   SoftY
                  cmp   TvSoftY1
                  bcc   :tno
@@ -4617,6 +4626,20 @@ CelRunMask       lda   CelRow
                  asl   a
                  asl   a
                  sta   TmpW2
+* The television punches a hole in the walkbehind inside the glass. Which
+* column that is does not change down a run, so it is settled here once
+* instead of twice for every masked pixel of everyone on the set.
+                 stz   TvColOk
+                 lda   TvSoftMask
+                 beq   :tvfatto
+                 lda   CelPx
+                 cmp   TvSoftX1
+                 bcc   :tvfatto
+                 cmp   TvSoftX2
+                 bcs   :tvfatto
+                 lda   #1
+                 sta   TvColOk
+:tvfatto         anop
 :skip            lda   RunNow
                  bne   :c_e
                  rts
@@ -4660,7 +4683,7 @@ CelRunMask       lda   CelRow
                  lda   [zpMask],y
                  and   CelMbit
                  beq   :uAdraw
-                 lda   TvSoftMask           ; the common case is "masked pixel,
+                 lda   TvColOk              ; the common case is "masked pixel,
                  beq   :uAav                ; skip it": no call for that
                  jsr   TvMaskPunch
                  bcs   :uAav
@@ -4678,7 +4701,7 @@ CelRunMask       lda   CelRow
                  lda   [zpMask],y
                  and   CelMbit
                  beq   :uBdraw
-                 lda   TvSoftMask
+                 lda   TvColOk
                  beq   :uAav
                  jsr   TvMaskPunch
                  bcs   :uAav
@@ -4729,7 +4752,7 @@ CelRunMask       lda   CelRow
                  lda   [zpMask],y
                  and   CelMbit
                  beq   :drawA
-                 lda   TvSoftMask
+                 lda   TvColOk
                  beq   :sa
                  jsr   TvMaskPunch
                  bcs   :sa
@@ -4759,7 +4782,7 @@ CelRunMask       lda   CelRow
                  lda   [zpMask],y
                  and   CelMbit
                  beq   :drawB
-                 lda   TvSoftMask
+                 lda   TvColOk
                  beq   :sb
                  jsr   TvMaskPunch
                  bcs   :sb
@@ -4827,6 +4850,8 @@ ResetVM          lda   #$FFFF               ; no room's mask is cached yet
                  sta   ActFace,x
                  lda   #$FFFF
                  sta   ActBox,x
+                 lda   #0
+                 sta   ActMasc,x
                  lda   #0
                  inx
                  inx
@@ -16648,6 +16673,7 @@ CelBuf           ds    128    ; one column of that cel, file colours
 HatClip          ds    2      ; Zak costume 31: 18x22 flying hat (HatRowSkip)
 HatPal6          ds    2      ; saved DrawPal[6] while painting the hat
 TvSoftMask       ds    2      ; Zak room 2 TV: punch mask in glass only
+TvColOk          ds    2      ; this column is inside the glass
 TvSoftX1         ds    2
 TvSoftX2         ds    2
 TvSoftY1         ds    2
@@ -16750,6 +16776,7 @@ PassoT           ds    2
 InvDirty         ds    2
 MaskPitch        ds    2
 MascAtt          ds    2                    ; the mask of the box he stands on
+ActMasc          ds    {NACT}*2             ; the last mask each one really had
 CelRy            ds    2                    ; the pixel's row inside the room
 CelVis           ds    2
 TxtYCache        ds    2
