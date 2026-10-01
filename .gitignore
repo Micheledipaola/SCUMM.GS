@@ -26,3 +26,5 @@ tools/_*
 .cursor/
 tmp/
 .DS_Store
+build.local.sh
+macros/

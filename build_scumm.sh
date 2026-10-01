@@ -11,25 +11,37 @@ set -e
 cd "$(dirname "$0")"
 ROOT="$PWD"
 
+# Where things are on this particular machine goes in build.local.sh,
+# which git ignores: MERLIN32, MERLIN_LIB, CADIUS, ZAK, AMIGA_2MG, DISK.
+# Nothing in this file names a path outside the repository, so a fresh
+# clone builds anywhere the tools are on PATH.
+[ -f "$ROOT/build.local.sh" ] && . "$ROOT/build.local.sh"
+
 SRC="${1:-data}"
-MERLIN32="${MERLIN32:-/Users/Michele/EMU/IIGS/Merlin32/Merlin32}"
-MERLIN_HOME="$(cd "$(dirname "$MERLIN32")" && pwd)"
-CADIUS="${CADIUS:-$ROOT/tools/bin/cadius}"
-# Merlin32 1.2 treats CR in *.Macs.s as part of the opcode, so MAC never
-# matches. Give it a Unix-LF copy of the toolkit macros.
-MACRO_DIR="$ROOT/macros"
-mkdir -p "$MACRO_DIR"
-python3 - "$MERLIN_HOME/Library" "$MACRO_DIR" <<'PY'
+MERLIN32="${MERLIN32:-merlin32}"
+MERLIN_BIN="$(command -v "$MERLIN32" || echo "$MERLIN32")"
+MERLIN_HOME="$(cd "$(dirname "$MERLIN_BIN")" 2>/dev/null && pwd || echo .)"
+CADIUS="${CADIUS:-cadius}"
+# Merlin32 1.2 wants the macro folder as an argument and treats a CR in
+# *.Macs.s as part of the opcode, so MAC never matches on the toolkit
+# files as shipped: give it a Unix-LF copy. Merlin32 1.1 takes no such
+# argument and ships no Library, so the whole step is skipped there.
+MACRO_DIR=""
+MERLIN_LIB="${MERLIN_LIB:-$MERLIN_HOME/Library}"
+if [ -d "$MERLIN_LIB" ]; then
+  MACRO_DIR="$ROOT/macros"
+  mkdir -p "$MACRO_DIR/4"
+  python3 - "$MERLIN_LIB" "$MACRO_DIR" <<'MACPY'
 import sys
 from pathlib import Path
 src, dst = Path(sys.argv[1]), Path(sys.argv[2])
 for p in src.glob('*.Macs.s'):
     (dst / p.name).write_bytes(p.read_bytes().replace(b'\r\n', b'\n').replace(b'\r', b'\n'))
-PY
-mkdir -p "$MACRO_DIR/4"
-for m in Util Locator Mem Misc Event Qd Sound QdAux Window Menu Ctl Line Dialog Std List; do
-  cp "$MACRO_DIR/${m}.Macs.s" "$MACRO_DIR/4/${m}.Macs"
-done
+MACPY
+  for m in Util Locator Mem Misc Event Qd Sound QdAux Window Menu Ctl Line Dialog Std List; do
+    [ -f "$MACRO_DIR/${m}.Macs.s" ] && cp "$MACRO_DIR/${m}.Macs.s" "$MACRO_DIR/4/${m}.Macs"
+  done
+fi
 
 if [ ! -f src/fontdata.s ]; then
   echo "==> font: the one drawn for this project"
@@ -38,7 +50,7 @@ else
   echo "==> font: src/fontdata.s"
 fi
 
-DISK="$ROOT/../SCUMM.2mg"
+DISK="${DISK:-$ROOT/build/SCUMM.2mg}"
 # Save games are SAVE0..SAVE9 next to the LFL files (MM/ or ZAK/).
 # CREATEVOLUME wipes the volume, so pull them off first and put them back.
 KEEP_SAVES="$ROOT/keep_saves"
@@ -71,7 +83,11 @@ preserve_saves() {
 
 echo "==> 65816 assembly"
 # Merlin32 v1.2: merlin32 [-V] <macro_folder> <source>
-"$MERLIN32" -V "$MACRO_DIR" "$ROOT/src/scumm.s"
+if [ -n "$MACRO_DIR" ]; then
+  "$MERLIN32" -V "$MACRO_DIR" "$ROOT/src/scumm.s"
+else
+  "$MERLIN32" -V "$ROOT/src/scumm.s"
+fi
 
 preserve_saves "$DISK"
 
@@ -92,8 +108,7 @@ if ! ls stage/MM/L??.LFL >/dev/null 2>&1; then
   exit 1
 fi
 
-ZAK="${ZAK:-/Users/Michele/EMU/IIGS/out/ZakEnh}"
-if [ -d "$ZAK" ]; then
+if [ -n "$ZAK" ] && [ -d "$ZAK" ]; then
   echo "==> Zak: $ZAK"
   mkdir -p stage/ZAK
   for f in "$ZAK"/*; do
@@ -108,22 +123,23 @@ if [ -d "$ZAK" ]; then
 fi
 
 echo "==> Amiga SFX (no music), GSFX banks"
-AMIGA_2MG="${AMIGA_2MG:-$ROOT/../altri SCUMM/SCUMM-AMIGA.2mg}"
 rm -f stage/MM/SFX stage/MM/SFXI stage/MM/SFX[0-9]
-if [ -f "$AMIGA_2MG" ]; then
+if [ -n "$AMIGA_2MG" ] && [ -f "$AMIGA_2MG" ]; then
   python3 "$ROOT/tools/sfx_amiga.py" --from-2mg "$AMIGA_2MG" stage/MM/SFX
 else
-  echo "No Amiga disk at $AMIGA_2MG — SFX omitted"
+  echo "   no Amiga disk (set AMIGA_2MG in build.local.sh) — SFX omitted"
 fi
 
 echo "==> music omitted (SFX only)"
 rm -f stage/MM/MUSI stage/MM/MUS0 stage/MM/MUSQ
 
-echo "==> Finder icon"
-mkdir -p stage/Icons
-cp "$ROOT/icons/SCUMM" stage/Icons/SCUMM
-echo "SCUMM=Type(CA),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)" \
-  > stage/Icons/_FileInformation.txt
+if [ -f "$ROOT/icons/SCUMM" ]; then
+  echo "==> Finder icon"
+  mkdir -p stage/Icons
+  cp "$ROOT/icons/SCUMM" stage/Icons/SCUMM
+  echo "SCUMM=Type(CA),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)" \
+    > stage/Icons/_FileInformation.txt
+fi
 
 # Put saved games back into the staged folders (MM and/or ZAK).
 restored=0
