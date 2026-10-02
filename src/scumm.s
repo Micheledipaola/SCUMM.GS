@@ -7390,6 +7390,18 @@ CancellaAttore   lda   ActVis,x
                  adc   BlkH
                  sta   AggB
                  jsr   RidisegnaRett
+* Whoever else stands in that box has just been rubbed out along with
+* him, so he has to be put back: the same marking the object path does
+* after it cleans a square. Without it the character left behind keeps
+* the hole - the top of Zak's head where the baker's box covered it -
+* until the whole room is composed again. MarcaToccatiTutti leaves
+* DstX/BlkW behind it, so the rectangle for SegnaRett is taken from
+* Agg* afterwards, which is where it was read from anyway.
+                 jsr   MarcaToccatiTutti
+                 lda   #1                   ; marking alone is not enough:
+                 sta   ActDirty             ; the pass starts from this
+                 ldx   ActIdx               ; not the one who is leaving
+                 stz   ActSporco,x
                  lda   AggX
                  sta   DstX
                  lda   AggY
