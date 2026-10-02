@@ -650,11 +650,17 @@ MainLoop         jsr   Orologio
 * service keys: to wander between rooms while the game cannot take us
 * there by itself yet
                  cmp   #$2E                 ; full stop: next room
-                 beq   :stanzaSu
+                 bne   :nosu
+                 brl   :stanzaSu
+:nosu            anop
                  cmp   #$2C                 ; comma: previous room
-                 beq   :stanzaGiu
+                 bne   :nogiu
+                 brl   :stanzaGiu
+:nogiu           anop
                  cmp   #$3B                 ; semicolon: ten rooms forward
-                 beq   :stanzaDieci
+                 bne   :nodieci
+                 brl   :stanzaDieci
+:nodieci         anop
                  cmp   #'d'                 ; D turns debug on and off
                  beq   :debug
                  cmp   #'D'
@@ -663,6 +669,10 @@ MainLoop         jsr   Orologio
                  beq   :full                ; frame, the way a state change
                  cmp   #'F'                 ; used to. Slow on purpose: it is
                  beq   :full                ; there to tell a drawing bug from
+                 cmp   #'u'                 ; U: draw the costumes the old way,
+                 beq   :uno                 ; a pixel at a time, to tell a
+                 cmp   #'U'                 ; fault in the new one from a
+                 beq   :uno                 ; fault that was already there
                  jsr   TastoGioco
                  brl   :vivi
 :esc             jsr   TastoEsc
@@ -677,6 +687,12 @@ MainLoop         jsr   Orologio
                  eor   #1
                  sta   DbgOn
                  jsr   DrawDbg
+                 brl   :vivi
+:uno             lda   PaintUno
+                 eor   #1
+                 sta   PaintUno
+                 lda   #1
+                 sta   DaComporre
                  brl   :vivi
 * a missing-redraw one. If something appears only with F held on, the
 * piece-by-piece path is not covering it.
@@ -3552,22 +3568,18 @@ ShowActor        lda   IsZak
                  bne   :hagia               ; looks forward
                  lda   #2
                  sta   ActFace,x
-:hagia           lda   #1
-                 jsr   StartAnim
-                 lda   #2
-                 jsr   StartAnim
-                 lda   #4
-                 jsr   StartAnim
+:hagia           jsr   PosaSuScena
                  bra   :vis
-* Coming on stage is the one moment the limbs are cleared: it is the
-* original's init frame, and without it a chore lit in another room
-* follows the character about - the Caponian clerk kept the hat of his
-* phone-company disguise into the aliens' room. Turning and standing
-* still must leave the limbs alone, which is why the clearing is here
-* and not in FermaPose.
+* Coming on stage is the one moment the limbs are cleared, and the one
+* place all three poses are laid down: showActor in the original clears
+* the costume and then runs the standing frame, the init frame and the
+* mouth-closed frame, which in V2 are chores 1, 2 and 4. Without the
+* clearing a chore lit in another room follows the character about - the
+* Caponian clerk kept the hat of his phone-company disguise into the
+* aliens' room.
 :zak             jsr   ApplicaPalCost
                  jsr   ResetLimbs
-                 jsr   FermaPose
+                 jsr   PosaSuScena
                  jsr   AssegnaCasella
 :vis             ldx   ActIdx
                  lda   #1
@@ -3578,9 +3590,19 @@ ShowActor        lda   IsZak
                  sta   ActOldY,x
                  rts
 
-* Standing still: drop leftover walk limbs, then the three V2 layers
-* (body, head, mouth). StartAnim 1 alone leaves the legs walking.
+* Standing still is the standing chore and nothing else, which is what
+* the original does when a walk ends: startAnimActor(_standFrame), and
+* in V2 the standing frame is chore 1. Laying the other two down as well
+* is what rubbed out the Caponian clerk's disguise: the game lights it
+* once with animateActor 24, chore 6, which draws limbs 1 to 6, and
+* chores 2 and 4 cover limbs 3 and 4 between them. Chore 1 touches only
+* 1, 2, 5 and 6, so what the disguise put on the other two stays.
 FermaPose        lda   #1
+                 jmp   StartAnim
+
+* The three poses of coming on stage: standing, the init frame, the
+* mouth closed. Only ShowActor, and only after the limbs are cleared.
+PosaSuScena      lda   #1
                  jsr   StartAnim
                  lda   #2
                  jsr   StartAnim
@@ -15708,7 +15730,11 @@ DrawDbgZak       stz   TxtX
                  beq   :nofull
                  lda   #MsgFull
                  jsr   ScriviDbg
-:nofull          lda   #MsgR
+:nofull          lda   PaintUno             ; U: costumes the old way
+                 beq   :nouno
+                 lda   #MsgUno
+                 jsr   ScriviDbg
+:nouno           lda   #MsgR
                  jsr   ScriviDbg
                  lda   CurRoom
                  jsr   DrawNum
@@ -16313,6 +16339,8 @@ MsgComma         asc   ','
 MsgZe            asc   'e'
                  dfb   0
 MsgFull          asc   'F '
+                 dfb   0
+MsgUno           asc   'U '
                  dfb   0
 MsgO1            asc   ' c20='
                  dfb   0
