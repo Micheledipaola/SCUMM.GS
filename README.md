@@ -53,6 +53,9 @@ What works on Zak today, beyond the shared V2 core:
   down the stairs, and walks out into the street
 - Credits verb lines long enough for Zak's text; hover highlight on those lines
 - D-key debug line for Zak: room and actors (`id:cost@x,ye…f…`)
+- A string's codes four to six stand for what a variable holds — a number, a
+  verb's name, the name of an object or a character — so the phone company's
+  bill reads "You owe $1138" and not "You owe $"
 
 Still open on Zak: music (only Amiga SFX banks are packed), further room and
 costume polish as playthrough finds them, and anything that would need a
@@ -176,22 +179,37 @@ names whether the box it describes uses that plane, so a character standing
 behind the bakery counter is cut against it and one standing in the street is
 not.
 
-Getting that right in Zak's street took finding a mistake that had been hiding
-behind three workarounds. The actor's anchor is its x times eight — the V2
-scale — and the cel's own offset is added to that; a mirrored cel is laid out
-backwards from the same anchor. The engine was adding a further eight pixels on
-top, sixteen when the character faced left, which moved every Zak sprite a whole
-strip to the right. In the apartment doorway of room 3 that was the difference
-between standing in the opening and standing behind the right-hand jamb, where
-the walk-behind plane is solid: the mask ate all but a sliver of him, and the
-sliver is what you saw.
+Getting that right in Zak's street took two goes, and the first one was wrong.
 
-The proof is not a screenshot. Left and right are the same drawing mirrored, so
-their two x ranges must be symmetric about the anchor. With the extra eight they
-were not; without it they are, to the pixel. Removing it took three workarounds
-with it — the blanket "no walk-behind in room 3", the window of cells that forced
-it off, and the exception that cancelled the extra eight for the living-room
-television.
+A V2 costume is drawn one strip to the right of the square the scripts walk to,
+and two strips when the character looks left. ScummVM does the same in
+`Actor_v2::prepareDrawActorCostume`, and says plainly that it does not know why
+either. The engine had that offset, three workarounds had been piled on top of
+it over time, and taking the offset out made the apartment doorway look right —
+so out it came, and the workarounds with it.
+
+That was treating the symptom. What had been wrong was the workarounds; the
+strip belongs. The case that settled it is the baker in room 3: script 39 parks
+him at x 18 and leaves him there two seconds before he walks to his window, and
+the bakery's wall mask starts at room x 141. Without the strip his left arm
+lands at 136 and five columns of him stick out beside the window, before and
+after the scene. With it he spans 144..164 and the wall covers him.
+
+The lesson is about the proof rather than the pixel. Left and right are the same
+drawing mirrored, so their two x ranges must be symmetric about the anchor —
+and they are, with the strip and without it. That test catches a *difference*
+between the two sides and nothing else; a constant added to both leaves the
+symmetry untouched, and the strip is exactly such a constant. The test was
+sound and the conclusion drawn from it was not.
+
+A costume's limbs are the other thing the original is careful about. Lighting a
+chore changes only the limbs that chore names, and the rest carry on with what
+they were doing. Turning is only a turn, and standing still only puts the
+standing pose back: neither clears anything. The limbs are cleared at one
+moment, coming on stage, which is the original's init frame. Getting that wrong
+shows either way — clear too much and the Caponian clerk loses the disguise the
+game lights once with `animateActor 24`, clear too little and he keeps the hat
+into the aliens' room.
 
 ## What a frame costs
 
@@ -224,6 +242,37 @@ difference. Measured in passes through the main loop for the same work:
 
 The second number is larger because that room was also recomposing itself on
 every pass through the main loop, which was one of the workarounds above.
+
+### Drawing a costume two columns at a time
+
+Once the room stopped recomposing itself, what was left at the top of a frame
+was the characters. In the aliens' room with four of them redrawn on every pass,
+`PaintCel` was 75% of the frame and its masked inner loop alone 53%.
+
+Neighbouring screen columns share a byte, and painting them a pixel at a time
+cost a read, a mask, an or and a write for each nibble. The two columns of a cel
+cannot be decoded side by side — one run of the file can end in one column and
+carry on into the next — so each is decoded on its own into a list of runs, and
+the two lists are then merged. Wherever a run of one overlaps a run of the other
+the byte is the same all the way down, which leaves the inner loop with nothing
+to do but store it.
+
+Three things carry most of the gain. The sixteen colours of the file are
+remapped and dimmed once per character instead of once per run. The row loops
+keep the row offset in an index register and the accumulator eight bits wide
+from end to end, with the two pointers already aimed at the pair of columns. And
+the clipping is settled once for the whole cel, so the merge never asks about it.
+
+| aliens' room, four characters redrawn every pass | before | after |
+|---|---|---|
+| `PaintCel` | 1,010,000 cycles a frame | 723,000 |
+| the whole frame | 478 ms | 378 ms |
+
+The old path is still there, for the two cels that need a decision per pixel —
+the flying hat and the television glass — and as the thing to measure against: a
+harness draws every cel both ways in the same run and compares the buffer. 1,300
+cels across both games come out identical to the byte, and Maniac's frames hash
+the same as before the change.
 
 Text is clamped at the last column as well. A glyph written at column 40 lands on
 the next scanline's SHR control bytes and paints red stripes across the panel, so
