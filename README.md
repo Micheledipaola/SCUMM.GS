@@ -1,4 +1,4 @@
-# SCUMM for the Apple IIGS
+# SCUMMv2 for the Apple IIGS
 
 A SCUMM V2 interpreter written in 65816 assembly, running on a stock Apple IIGS.
 It reads the original game files — *Maniac Mansion*, *Zak McKracken* — and plays them:
@@ -12,7 +12,8 @@ and debug it.
 
 ## Status
 
-**Maniac Mansion** is playable from the title screen into the mansion: rooms,
+**Maniac Mansion**, the DOS release, is playable from the title screen into the
+mansion: rooms,
 walking with pathfinding, actors with their costume animations, objects and
 their states, the verb panel and the inventory, the sentence line, dialogue
 with the mouth moving, scrolling rooms with the camera following, dark rooms
@@ -29,8 +30,8 @@ ESC skips a cutscene when the script allowed it, Q asks before quitting, Space
 pauses, Apple-8 asks before restarting. The boot dialog picks which game to
 load when both are on the disk.
 
-**Zak McKracken** (enhanced V2 / ZakEnh) is the current focus and runs on the
-same interpreter. The game is selected when the index has 155 global scripts
+**Zak McKracken**, the DOS release — V2, the one sold as enhanced — is the current
+focus and runs on the same interpreter. It is being tested extensively. The game is selected when the index has 155 global scripts
 (`IsZak`); Zak-only behaviour stays behind that flag so Maniac is not disturbed.
 
 What works on Zak today, beyond the shared V2 core:
@@ -59,8 +60,8 @@ What works on Zak today, beyond the shared V2 core:
 
 Still open on Zak: music (only Amiga SFX banks are packed), further room and
 costume polish as playthrough finds them, and anything that would need a
-global engine change without an `IsZak` guard. Later SCUMM versions remain a
-different engine.
+global engine change without an `IsZak` guard. Later SCUMM games — Monkey Island
+and on — are a different engine, V5, and will most likely not even load.
 
 A few opcodes neither game has needed yet are still stubs.
 
@@ -143,9 +144,9 @@ copied the old way.
 
 ### Shadowing and PEI slamming
 
-The PEI slam (Shepherd / Wolf3D IIGS) is six cycles for two bytes: stack
-and direct page sit on a page of bank `$01` SHR memory and `PEI` rewrites
-that page onto itself so the shadow hardware copies it to `$E1`.
+The PEI slam is six cycles for two bytes: stack and direct page sit on a
+page of bank `$01` SHR memory and `PEI` rewrites that page onto itself so
+the shadow hardware copies it to `$E1`.
 
 It has **not** been timed on a real IIGS for this engine. Emulator numbers
 for a *second* copy of an already-built buffer were:
@@ -328,9 +329,9 @@ on Maniac” as a side effect of a Zak fix until there is an explicit MM pass.
 
 ## Credits and licence
 
-Written with Claude (Anthropic) for Michele Di Paola, who directs the port, tests every
-build on real hardware and on GSplus, and found most of the bugs described in the
-comments.
+Written with Claude and Grok for Michele Di Paola, who directs the port, tests
+every build on real hardware and on emulator (GSplus), and found most of the bugs
+described in the comments.
 
 The file formats and the opcode table were worked out from
 **[ScummVM](https://www.scummvm.org/)** and **scummvm-tools** (`descumm`), which are
