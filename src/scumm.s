@@ -470,8 +470,15 @@ MainLoop         jsr   Orologio
                  jsr   MoveCamera
                  jsr   AnimActors
                  jsr   MoveActors
-                 jsr   RidisegnaAttori
-:nocam           anop
+* Animation advances on the game clock - four ticks, fifteen frames a
+* second - but repairing the picture does not. An object animating under
+* a character rubs out a piece of him on any pass, and the window goes to
+* the screen on every pass too, so waiting for the next game frame to put
+* him back is a piece of character missing on screen in between: the
+* aliens' necks under their heads, the baker flashing at his window.
+* RidisegnaAttori does nothing at all unless something is dirty, so
+* asking it every pass costs nothing when nothing broke.
+:nocam           jsr   RidisegnaAttori
 
 * The F key: compose the whole room every frame, the way every object
 * state change used to. This has to be looked at here, on the way
@@ -7253,6 +7260,10 @@ CopiaDstAgg      lda   DstX
                  sta   AggB
                  rts
 
+* Both boxes, for the same reason as MarcaToccatiTutti: the box he was
+* last drawn in and the one he stands in now. Asking only the old one
+* misses whoever has moved since, and the piece of him that the walker's
+* cleanup just rubbed out is never put back.
 MarcaToccatiDaAgg lda  ActIdx
                  sta   TmpAct
                  stz   ActScan
@@ -7263,10 +7274,14 @@ MarcaToccatiDaAgg lda  ActIdx
                  jsr   AttoreInScena
                  bcs   :avanti
                  jsr   ScatolaVecchia
+                 bcs   :piedi
+                 jsr   IntersecaAgg
+                 bcc   :segna
+:piedi           jsr   ScatolaPiedi
                  bcs   :avanti
                  jsr   IntersecaAgg
                  bcs   :avanti
-                 ldx   ActScan
+:segna           ldx   ActScan
                  lda   #1
                  sta   ActSporco,x
 :avanti          lda   ActScan
@@ -7282,6 +7297,11 @@ MarcaToccatiDaAgg lda  ActIdx
 * Like MarcaToccatiDaAgg but with nobody left out: for a piece of room
 * that changed on its own (an object lighting up), not for a character
 * who moved.
+* Both boxes have to be asked about: the one he was last drawn in and the
+* one he stands in now. A character who has moved since the last frame
+* has a stale old box, and if only that is tested the piece of him the
+* object's square just rubbed out is never put back - a shoulder, the
+* neck under a head. Whoever walks is exactly the one who needs it.
 MarcaToccatiTutti lda  ActIdx
                  pha
                  stz   ActScan
@@ -7290,10 +7310,14 @@ MarcaToccatiTutti lda  ActIdx
                  jsr   AttoreInScena
                  bcs   :avanti
                  jsr   ScatolaVecchia
+                 bcs   :piedi
+                 jsr   IntersecaAgg
+                 bcc   :segna
+:piedi           jsr   ScatolaPiedi
                  bcs   :avanti
                  jsr   IntersecaAgg
                  bcs   :avanti
-                 ldx   ActScan
+:segna           ldx   ActScan
                  lda   #1
                  sta   ActSporco,x
 :avanti          lda   ActScan
@@ -8595,6 +8619,15 @@ hPutInRoom       jsr   VOB1
                  cmp   CurRoom
                  beq   :nonquesta           ; he is not really leaving
                  jsr   CancellaAttore
+* And the whole window goes to the screen, exactly as it does below when
+* somebody arrives. Rubbing him out of the buffer works - that much is
+* measured, the buffer is clean on the next frame - but leaving it to the
+* piece-by-piece path left the baker on screen beside his window after
+* going back in. Somebody leaving the room is a rare event and the same
+* kind of event as somebody arriving; the comment below says why that one
+* is not trusted to a rectangle either.
+                 lda   #1
+                 sta   Redraw
 :nonquesta       ldx   ActIdx
                  lda   ActArg
                  sta   ActRoom,x
