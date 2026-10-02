@@ -250,6 +250,8 @@ zpDoc            =     $34            ; long pointer while copying into DOC RAM
 zpPix2           =     $38            ; the picture, at the column being drawn
 zpMask0          =     $3C            ; the room's own mask as decoded, kept
 *                                       so a piece of it can be put back
+zpCel            =     $40            ; the picture at the pair of columns
+zpCelM           =     $44            ; the mask, at those same columns
 
 *=======================================================================
 Start            phk
@@ -3994,6 +3996,7 @@ DrawActor        rep   #$30
                  rts
 :ok              jsr   BaseCostume          ; zpStr = start of the costume
                  jsr   PreparaPalAttore
+                 jsr   PreparaCelPal
                  ldy   #7
                  lda   [zpStr],y
                  sta   CmdOff               ; the animation commands
@@ -4319,7 +4322,20 @@ DrawLimb         lda   LimbNo               ; where its frames are
 * same byte, and with colour zero meaning "transparent".
 * The pending run must be cleared: it lasts to the end of the cel, no
 * further.
-PaintCel         stz   CelCol
+* Two ways to write the same picture. PaintCelDue is the one that pairs
+* the columns up and stores whole bytes; the old column-at-a-time path
+* stays for the two cels that need a per-pixel decision - the flying hat
+* and the television glass - and for proving the new one draws exactly
+* the same thing (PaintUno forces it from a test).
+PaintCel         lda   PaintUno
+                 bne   PaintCelUno
+                 lda   HatClip
+                 bne   PaintCelUno
+                 lda   TvSoftMask
+                 bne   PaintCelUno
+                 brl   PaintCelDue
+
+PaintCelUno      stz   CelCol
                  stz   CelRun
                  lda   Vars+VO_LIGHTS
                  and   #8
@@ -4339,40 +4355,7 @@ PaintCel         stz   CelCol
 
 :pixel           lda   CelRun
                  bne   :dentro
-                 ldy   CelSrc
-                 lda   [zpStr],y
-                 and   #$00FF
-                 inc   CelSrc
-                 sta   TmpW
-                 lsr   a
-                 lsr   a
-                 lsr   a
-                 lsr   a
-                 sta   CelColor
-* Colour 0 in the file is transparent. actorOps Color may paint a real
-* colour as 0 (Zak's black suit): that pixel must still be drawn.
-                 stz   CelSkip
-                 lda   CelColor
-                 beq   :era0
-                 jsr   RemapColore
-                 bra   :doporemap
-:era0            lda   #1
-                 sta   CelSkip
-:doporemap       lda   CelLit
-                 bne   :coloreok
-                 lda   CelSkip
-                 bne   :coloreok
-                 lda   #8
-                 sta   CelColor
-:coloreok        lda   TmpW
-                 and   #$000F
-                 sta   CelRun
-                 bne   :dentro
-                 ldy   CelSrc               ; length in the next byte
-                 lda   [zpStr],y
-                 and   #$00FF
-                 sta   CelRun
-                 inc   CelSrc
+                 jsr   ProssimoRun
 
 :dentro          lda   CelH
                  sec
@@ -4417,6 +4400,577 @@ PaintCel         stz   CelCol
                  bcs   :fine
                  brl   :colonna
 :fine            rts
+
+*=======================================================================
+* ProssimoRun - the next run of the cel's stream
+*=======================================================================
+* Colour and length share a byte, and a length of zero means the length
+* is in the byte after. Colour zero in the file is transparent, but
+* actorOps Color may paint a real colour as zero (Zak's black suit), so
+* what decides is where the zero came from, not the colour that comes
+* out. Leaves CelColor remapped and dimmed, CelSkip and CelRun.
+ProssimoRun      ldy   CelSrc
+                 lda   [zpStr],y
+                 and   #$00FF
+                 inc   CelSrc
+                 sta   TmpW
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 and   #$001E               ; the colour, as a word index
+                 tax
+                 lda   CelPal,x
+                 sta   CelColor
+                 cmp   #$FFFF
+                 bne   :opaco
+                 lda   #1
+                 sta   CelSkip
+                 bra   :lungo
+:opaco           stz   CelSkip
+:lungo           lda   TmpW
+                 and   #$000F
+                 sta   CelRun
+                 bne   :fine
+                 ldy   CelSrc               ; the length is in the next byte
+                 lda   [zpStr],y
+                 and   #$00FF
+                 sta   CelRun
+                 inc   CelSrc
+:fine            rts
+
+*=======================================================================
+* PreparaCelPal - the sixteen colours of the file, ready to paint with
+*=======================================================================
+* The remap and the dimming are the same for every run of every cel this
+* character is drawn with, so they are done once here instead of once a
+* run. $FFFF is the file's colour zero: transparent. actorOps Color can
+* paint a real colour as zero, and that one still comes out of DrawPal
+* like any other - what decides is where the zero was written, not the
+* colour that comes out.
+PreparaCelPal    lda   Vars+VO_LIGHTS
+                 and   #8
+                 sta   CelLit
+                 lda   #$FFFF
+                 sta   CelPal
+                 ldy   #1
+                 ldx   #2
+:lp              lda   CelLit
+                 beq   :buio
+                 lda   DrawPal,y
+                 and   #$00FF
+                 bra   :metti
+:buio            lda   #8                   ; lights out: one dark colour
+:metti           sta   CelPal,x
+                 inx
+                 inx
+                 iny
+                 cpy   #16
+                 bcc   :lp
+                 rts
+
+*=======================================================================
+* PaintCelDue - the cel written a whole byte at a time
+*=======================================================================
+* Two neighbouring screen columns share one byte, so a pair of them can
+* be put down with a single store instead of the four read-modify-writes
+* a pixel at a time costs. The two columns cannot be decoded side by
+* side - one run of the file can end in one column and carry on into the
+* next - so each is decoded on its own into a list of runs, and the two
+* lists are then merged. Wherever a run of one overlaps a run of the
+* other the byte is the same all the way down, which is what leaves the
+* inner loop with nothing to do but store it.
+* A column whose partner would fall in the other byte (the cel starts on
+* an odd column, or it has an odd number of them) goes out on its own
+* through the old per-run routines, and so does a pair that hangs over
+* the edge of the room.
+PaintCelDue      stz   CelRun
+                 lda   Vars+VO_LIGHTS
+                 and   #8
+                 sta   CelLit
+                 lda   RoomH
+                 cmp   #ROOMROWS
+                 bcc   :hok
+                 lda   #ROOMROWS
+:hok             sta   HMax
+                 stz   StreamCol
+* Whether the first column has to go out alone. Drawn the right way
+* round the columns run left to right from CelX, so they pair up when
+* CelX is even; mirrored they run right to left from the far end, and
+* the first of a pair is then the odd one.
+                 lda   MirrorOn
+                 beq   :rovescio
+                 lda   CelX
+                 and   #1
+                 bra   :messa
+:rovescio        lda   CelX
+                 clc
+                 adc   CelW
+                 dec   a
+                 and   #1
+                 eor   #1
+:messa           sta   SolaPrima
+
+:ciclo           lda   StreamCol
+                 cmp   CelW
+                 bcc   :c_e
+                 rts
+:c_e             stz   ListaOff
+                 jsr   DecodeColonna
+                 lda   StreamCol
+                 jsr   XdiColonna
+                 sta   XA
+                 inc   StreamCol
+                 lda   SolaPrima
+                 beq   :coppia
+                 stz   SolaPrima
+                 stz   ListaOff
+                 lda   XA
+                 sta   SingX
+                 jsr   BlitSingola
+                 bra   :ciclo
+
+:coppia          lda   StreamCol
+                 cmp   CelW
+                 bcc   :c_eseconda
+                 stz   ListaOff             ; odd number of columns
+                 lda   XA
+                 sta   SingX
+                 jsr   BlitSingola
+                 rts
+:c_eseconda      lda   #RUNUNO
+                 sta   ListaOff
+                 jsr   DecodeColonna
+                 lda   StreamCol
+                 jsr   XdiColonna
+                 sta   XB
+                 inc   StreamCol
+* Which of the two is the left-hand pixel of the byte.
+                 lda   MirrorOn
+                 beq   :sxB
+                 lda   XA
+                 sta   PairX
+                 stz   ListaSx
+                 lda   #RUNUNO
+                 sta   ListaDx
+                 bra   :pronti
+:sxB             lda   XB
+                 sta   PairX
+                 lda   #RUNUNO
+                 sta   ListaSx
+                 stz   ListaDx
+:pronti          lda   PairX
+                 bmi   :duesole
+                 inc   a
+                 cmp   RoomW
+                 bcs   :duesole
+                 jsr   BlitCoppia
+                 brl   :ciclo
+:duesole         stz   ListaOff
+                 lda   XA
+                 sta   SingX
+                 jsr   BlitSingola
+                 lda   #RUNUNO
+                 sta   ListaOff
+                 lda   XB
+                 sta   SingX
+                 jsr   BlitSingola
+                 brl   :ciclo
+
+* XdiColonna - A holds a column of the file, out comes its screen column.
+XdiColonna       sta   TmpW
+                 lda   MirrorOn
+                 bne   :dritto
+                 lda   CelW                 ; mirrored: the last column of
+                 sec                        ; the drawing comes first
+                 sbc   TmpW
+                 dec   a
+                 sta   TmpW
+:dritto          lda   TmpW
+                 clc
+                 adc   CelX
+                 rts
+
+*=======================================================================
+* DecodeColonna - one column of the cel into a list of runs
+*=======================================================================
+* ListaOff says which of the two lists. A run that reaches the foot of
+* the column is cut there and the rest of it is left in CelRun for the
+* next column, exactly as the per-pixel path leaves it.
+DecodeColonna    lda   ListaOff
+                 sta   RunIdx
+                 stz   RigaCol
+:lp              lda   CelRun
+                 bne   :c_e
+                 jsr   ProssimoRun
+:c_e             lda   CelH
+                 sec
+                 sbc   RigaCol              ; rows left in the column
+                 beq   :fine
+                 cmp   CelRun               ; the run may stop sooner
+                 bcc   :cap
+                 lda   CelRun
+:cap             sta   RunNow
+                 lda   CelRun
+                 sec
+                 sbc   RunNow
+                 sta   CelRun
+                 lda   RigaCol
+                 clc
+                 adc   RunNow
+                 sta   RigaCol
+                 ldx   RunIdx
+                 lda   CelColor             ; $FFFF is already transparent
+                 sta   RunCol,x
+                 lda   RigaCol
+                 sta   RunEnd,x
+                 inx
+                 inx
+                 stx   RunIdx
+                 cmp   CelH
+                 bcc   :lp
+:fine            ldx   RunIdx               ; a stop, in case the merge
+                 lda   #$7FFF               ; ever looks one past the end
+                 sta   RunEnd,x
+                 lda   #$FFFF
+                 sta   RunCol,x
+                 rts
+
+*=======================================================================
+* BlitSingola - a column on its own, through the old per-run routines
+*=======================================================================
+BlitSingola      stz   CelRow
+                 lda   SingX
+                 sta   CelPx
+                 ldx   ListaOff
+:lp              lda   CelRow
+                 cmp   CelH
+                 bcc   :c_e
+                 rts
+:c_e             lda   RunEnd,x
+                 sec
+                 sbc   CelRow
+                 beq   :avanti
+                 sta   RunNow
+                 lda   RunCol,x
+                 cmp   #$FFFF
+                 beq   :trasp
+                 sta   CelColor
+                 phx
+                 lda   MascAtt
+                 bne   :lento
+                 lda   CelPx
+                 bmi   :fuori
+                 cmp   RoomW
+                 bcs   :fuori
+                 jsr   CelRunFast
+                 bra   :dopo
+:fuori           plx
+                 bra   :trasp
+:lento           jsr   CelRunMask
+:dopo            plx
+                 bra   :avanti
+:trasp           lda   CelRow
+                 clc
+                 adc   RunNow
+                 sta   CelRow
+:avanti          inx
+                 inx
+                 bra   :lp
+
+*=======================================================================
+* BlitCoppia - the two lists merged, a byte at a time
+*=======================================================================
+BlitCoppia       lda   PairX
+                 lsr   a
+                 clc
+                 adc   zpPix                ; the picture at this pair of
+                 sta   zpCel                ; columns, so a row's own offset
+                 lda   zpPix+2              ; is all the loops below need
+                 adc   #0
+                 sta   zpCel+2
+                 lda   PairX
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 clc
+                 adc   zpMask
+                 sta   zpCelM
+                 lda   zpMask+2
+                 adc   #0
+                 sta   zpCelM+2
+                 lda   PairX
+                 and   #7
+                 asl   a
+                 tax
+                 lda   BitMasc,x            ; the left pixel's bit, and the
+                 sta   BitSx                ; one beside it: x is even, so
+                 lsr   a                    ; they share a byte
+                 sta   BitDx
+                 ora   BitSx
+                 sta   PairBits
+                 lda   MascAtt
+                 bne   :conmask
+                 stz   BitSx                ; nothing covers him here, and
+                 stz   BitDx                ; every test below comes out free
+                 stz   PairBits
+* Which rows of the cel land on the screen. Settled once: the merge below
+* runs for every pair of runs in the cel, and a clip test inside it costs
+* more than the drawing does.
+:conmask         lda   CelY
+                 bpl   :daccapo
+                 eor   #$FFFF               ; it starts above the room
+                 inc   a
+                 bra   :lofatto
+:daccapo         lda   #0
+:lofatto         sta   RigaLo
+                 lda   HMax
+                 sec
+                 sbc   CelY
+                 bmi   :vuoto
+                 cmp   CelH
+                 bcc   :hifatto
+                 lda   CelH
+:hifatto         sta   RigaHi
+                 cmp   RigaLo
+                 beq   :vuoto
+                 bcs   :c_erighe
+:vuoto           rts
+
+:c_erighe        lda   RigaLo
+                 sta   RigaMrg
+                 ldx   ListaSx              ; the two lists stay in the index
+                 ldy   ListaDx              ; registers from here on
+* Whatever is above the top of the room is walked past once, so that the
+* merge never has to ask where it starts.
+:psx             lda   RunEnd,x
+                 cmp   RigaLo
+                 bcc   :psxav
+                 bne   :psxfatto
+:psxav           inx
+                 inx
+                 bra   :psx
+:psxfatto        lda   RunEnd,y
+                 cmp   RigaLo
+                 bcc   :pdxav
+                 bne   :pdxfatto
+:pdxav           iny
+                 iny
+                 bra   :psxfatto
+:pdxfatto        jsr   ValoriSx
+                 jsr   ValoriDx
+
+:merge           lda   RigaMrg
+                 cmp   RigaHi
+                 bcc   :c_e
+                 rts
+:c_e             lda   RunEnd,x
+                 sta   FineSx
+                 lda   RunEnd,y
+                 cmp   FineSx               ; the stretch ends where the
+                 bcc   :piccolo             ; first of the two ends
+                 lda   FineSx
+:piccolo         sta   FineMrg
+                 cmp   RigaHi               ; or at the foot of the room
+                 bcc   :contok
+                 lda   RigaHi
+:contok          sec
+                 sbc   RigaMrg
+                 beq   :avanti
+                 bmi   :avanti
+                 sta   ContaR
+                 lda   CelY
+                 clc
+                 adc   RigaMrg
+                 sta   RigaY
+                 lda   SxVuoto
+                 bne   :sxvuoto
+                 lda   DxVuoto
+                 bne   :solosx
+                 lda   ValSx
+                 ora   ValDx
+                 sta   ValPair
+                 stx   IdxSx
+                 sty   IdxDx
+                 jsr   RigheDue
+                 bra   :torna
+:solosx          stx   IdxSx
+                 sty   IdxDx
+                 jsr   RigheSx
+                 bra   :torna
+:sxvuoto         lda   DxVuoto
+                 bne   :avanti              ; both of them transparent
+                 stx   IdxSx
+                 sty   IdxDx
+                 jsr   RigheDx
+:torna           ldx   IdxSx
+                 ldy   IdxDx
+
+:avanti          lda   FineMrg
+                 sta   RigaMrg
+                 cmp   RunEnd,x
+                 bne   :nosx
+                 inx
+                 inx
+                 jsr   ValoriSx
+:nosx            lda   FineMrg
+                 cmp   RunEnd,y
+                 bne   :nodx
+                 iny
+                 iny
+                 jsr   ValoriDx
+:nodx            brl   :merge
+
+* The colour of the run each list is on, kept ready so the merge does not
+* work it out again for every stretch. The left-hand one is held already
+* shifted into the high nibble.
+ValoriSx         lda   RunCol,x
+                 cmp   #$FFFF
+                 beq   :vuoto
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 sta   ValSx
+                 stz   SxVuoto
+                 rts
+:vuoto           lda   #1
+                 sta   SxVuoto
+                 rts
+
+ValoriDx         lda   RunCol,y
+                 cmp   #$FFFF
+                 beq   :vuoto
+                 sta   ValDx
+                 stz   DxVuoto
+                 rts
+:vuoto           lda   #1
+                 sta   DxVuoto
+                 rts
+
+* The three of them walk the rows with the row offsets in the index
+* registers and the accumulator eight bits wide from end to end, the way
+* the old per-pixel path did: a row costs two table reads and a store,
+* not four sixteen-bit sums through memory. zpCel and zpCelM already
+* point at this pair of columns, so the offset is the row's and nothing
+* else.
+
+* RigheDue - both pixels of the byte are painted.
+RigheDue         lda   RigaY
+                 clc
+                 adc   ContaR
+                 asl   a
+                 sta   FineIdx
+                 lda   RigaY
+                 asl   a
+                 tax
+                 lda   PairBits
+                 bne   :conmask
+* Nothing covers him here, so there is nothing to ask: a store a row.
+                 sep   #$20
+                 mx    %10
+                 lda   ValPair
+:lv              ldy   RowOff,x
+                 sta   [zpCel],y
+                 inx
+                 inx
+                 cpx   FineIdx
+                 bne   :lv
+                 rep   #$20
+                 mx    %00
+                 rts
+
+:conmask         sep   #$20
+                 mx    %10
+:lp              ldy   MaskRow,x
+                 lda   [zpCelM],y
+                 and   PairBits
+                 beq   :pieno
+                 cmp   PairBits
+                 beq   :salta               ; both of them behind it
+                 and   BitSx
+                 bne   :mezzodx
+                 ldy   RowOff,x             ; the right one is behind it
+                 lda   [zpCel],y
+                 and   #$0F
+                 ora   ValSx
+                 sta   [zpCel],y
+                 bra   :salta
+:mezzodx         ldy   RowOff,x             ; the left one is behind it
+                 lda   [zpCel],y
+                 and   #$F0
+                 ora   ValDx
+                 sta   [zpCel],y
+                 bra   :salta
+:pieno           ldy   RowOff,x
+                 lda   ValPair
+                 sta   [zpCel],y
+:salta           inx
+                 inx
+                 cpx   FineIdx
+                 bne   :lp
+                 rep   #$20
+                 mx    %00
+                 rts
+
+* RigheSx - only the left pixel is painted.
+RigheSx          lda   RigaY
+                 clc
+                 adc   ContaR
+                 asl   a
+                 sta   FineIdx
+                 lda   RigaY
+                 asl   a
+                 tax
+                 sep   #$20
+                 mx    %10
+:lp              lda   BitSx
+                 beq   :disegna
+                 ldy   MaskRow,x
+                 lda   [zpCelM],y
+                 and   BitSx
+                 bne   :salta
+:disegna         ldy   RowOff,x
+                 lda   [zpCel],y
+                 and   #$0F
+                 ora   ValSx
+                 sta   [zpCel],y
+:salta           inx
+                 inx
+                 cpx   FineIdx
+                 bne   :lp
+                 rep   #$20
+                 mx    %00
+                 rts
+
+* RigheDx - only the right pixel is painted.
+RigheDx          lda   RigaY
+                 clc
+                 adc   ContaR
+                 asl   a
+                 sta   FineIdx
+                 lda   RigaY
+                 asl   a
+                 tax
+                 sep   #$20
+                 mx    %10
+:lp              lda   BitDx
+                 beq   :disegna
+                 ldy   MaskRow,x
+                 lda   [zpCelM],y
+                 and   BitDx
+                 bne   :salta
+:disegna         ldy   RowOff,x
+                 lda   [zpCel],y
+                 and   #$F0
+                 ora   ValDx
+                 sta   [zpCel],y
+:salta           inx
+                 inx
+                 cpx   FineIdx
+                 bne   :lp
+                 rep   #$20
+                 mx    %00
+                 rts
 
 * HatRowSkip - carry set: skip a hat pixel.
 * Side face (0/1): skip remapped-black (costume 1→0) on rows 15-18,
@@ -16724,6 +17278,51 @@ CelRun           ds    2
 CelColor         ds    2
 CelSkip          ds    2      ; 1 = this run is the file's colour 0
 CelBuf           ds    128    ; one column of that cel, file colours
+
+* PaintCelDue: two columns of the cel as lists of runs, the second one
+* RUNUNO bytes along. A column is at most 100 rows, so it can hold at
+* most that many runs; 128 leaves room for the stop at the end.
+RUNUNO           =     256
+RunCol           ds    {RUNUNO}*2    ; the colour, $FFFF for transparent
+RunEnd           ds    {RUNUNO}*2    ; the row the run stops before
+PaintUno         ds    2      ; a test forcing the old per-pixel path
+HMax             ds    2      ; rows of the room that are on screen
+StreamCol        ds    2      ; which column of the file comes next
+SolaPrima        ds    2      ; the first column cannot be paired
+XA               ds    2
+XB               ds    2
+SingX            ds    2
+ListaOff         ds    2
+ListaSx          ds    2
+ListaDx          ds    2
+IdxSx            ds    2
+IdxDx            ds    2
+RunIdx           ds    2
+RigaCol          ds    2
+RigaMrg          ds    2
+FineIdx          ds    2
+SxVuoto          ds    2
+DxVuoto          ds    2
+RigaDa           ds    2
+RigaLo           ds    2
+RigaHi           ds    2
+CelPal           ds    32     ; the sixteen file colours, ready to paint
+RigaY            ds    2
+FineSx           ds    2
+FineDx           ds    2
+FineMrg          ds    2
+ContaR           ds    2
+ColSx            ds    2
+ColDx            ds    2
+ValPair          ds    2
+ValSx            ds    2
+ValDx            ds    2
+PairX            ds    2
+PairOff          ds    2
+PairMcol         ds    2
+PairBits         ds    2
+BitSx            ds    2
+BitDx            ds    2
 HatClip          ds    2      ; Zak costume 31: 18x22 flying hat (HatRowSkip)
 HatPal6          ds    2      ; saved DrawPal[6] while painting the hat
 TvSoftMask       ds    2      ; Zak room 2 TV: punch mask in glass only
