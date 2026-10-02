@@ -4188,18 +4188,27 @@ DrawLimb         lda   LimbNo               ; where its frames are
 * Where it lands on screen. The scripts count x in steps of eight and y
 * in steps of two: that is the V2 scale. Without mirroring the piece
 * sits to the left of the anchor instead of to the right.
-* The anchor is the actor's x times eight: the cel's own xmove is added
-* to it, and a mirrored cel is laid out backwards from the same anchor.
-* Nothing is added on top of that. An earlier +8 (+16 facing left) broke
-* the left/right pair out of mirror symmetry about the anchor and pushed
-* Zak a whole strip to the right, which is what put him behind the room-3
-* door jamb instead of in the opening.
+* The anchor is the actor's x times eight, plus one strip: V2 draws the
+* costume a strip to the right of the position the scripts walk to, and
+* two strips when the character looks left (facing 270, our face 0).
+* ScummVM does the same in Actor_v2::prepareDrawActorCostume and admits
+* it does not know why either. The proof it belongs here is the baker in
+* room 3: the script parks him at x 18 and the wall mask starts at room
+* x 141, so without the strip his left arm lands at 136 and five columns
+* of him stick out beside the bakery window. The test is the face, not
+* the mirror flag, because a costume can force mirroring on its own.
                  ldx   ActIdx
                  lda   ActX,x
                  asl   a
                  asl   a
                  asl   a
-                 sta   TmpW
+                 clc
+                 adc   #8
+                 ldy   ActFace,x
+                 bne   :ancora
+                 clc
+                 adc   #8
+:ancora          sta   TmpW
                  ldy   MirrorOn
                  beq   :arovescio
                  clc
