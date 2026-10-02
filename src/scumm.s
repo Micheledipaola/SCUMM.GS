@@ -3559,7 +3559,14 @@ ShowActor        lda   IsZak
                  lda   #4
                  jsr   StartAnim
                  bra   :vis
+* Coming on stage is the one moment the limbs are cleared: it is the
+* original's init frame, and without it a chore lit in another room
+* follows the character about - the Caponian clerk kept the hat of his
+* phone-company disguise into the aliens' room. Turning and standing
+* still must leave the limbs alone, which is why the clearing is here
+* and not in FermaPose.
 :zak             jsr   ApplicaPalCost
+                 jsr   ResetLimbs
                  jsr   FermaPose
                  jsr   AssegnaCasella
 :vis             ldx   ActIdx
@@ -3573,8 +3580,7 @@ ShowActor        lda   IsZak
 
 * Standing still: drop leftover walk limbs, then the three V2 layers
 * (body, head, mouth). StartAnim 1 alone leaves the legs walking.
-FermaPose        jsr   ResetLimbs
-                 lda   #1
+FermaPose        lda   #1
                  jsr   StartAnim
                  lda   #2
                  jsr   StartAnim
@@ -6309,36 +6315,17 @@ hAnimate         jsr   VOB1
                  stz   ActMoving,x
                  jsr   FermaPose
                  bra   :fine
+* Turning is only a turn: every limb keeps the chore it is on and is
+* drawn again facing the other way, which is what SetFacing does. It must
+* not put the character back in his standing pose - that would drop the
+* limbs another chore had lit, and those are often the whole point of the
+* scene: Melissa's hood on the television, the Caponian clerk's disguise
+* at the phone company, which the game lights with animateActor 24 and
+* never lights again.
 :verso           ldx   ActIdx
                  stz   ActMoving,x
-* Zak Melissa on TV: chore 8 lights L6 (hood). Talking does StartAnim 4/5
-* and overwrites ActFrame, so we must not key off ActFrame — look at L6's
-* CostFrm. FermaPose would wipe the hood until the next animate 32.
-                 lda   IsZak
-                 beq   :vpose
-                 lda   ActCost,x
-                 and   #$00FF
-                 cmp   #3
-                 bne   :vpose
-                 lda   #6
-                 sta   LimbNo
-                 jsr   LimbOff              ; X = limb-6 slot
-                 lda   CostFrm,x
-                 cmp   #$FFFF
-                 beq   :vpose               ; hood not on
-                 lsr   a
-                 lsr   a
-                 cmp   #8
-                 bne   :vpose
                  lda   AnimDir
                  jsr   SetFacing
-                 lda   #8
-                 jsr   StartAnim
-                 bra   :fine
-:vpose           ldx   ActIdx
-                 lda   AnimDir
-                 sta   ActFace,x
-                 jsr   FermaPose
 :fine            stz   Esito
                  rts
 
@@ -9597,8 +9584,9 @@ CatchStr         stz   MsgLen
 :incoda          stx   MsgLen
                  stx   MsgDa
 :lp              jsr   FetchB
-                 beq   :fine
-                 sta   ChTmp
+                 bne   :c_e
+                 brl   :fine
+:c_e             sta   ChTmp
                  and   #$007F
                  cmp   #8
                  bcs   :stampabile
@@ -9621,21 +9609,39 @@ CatchStr         stz   MsgLen
                  and   #$007F
                  cmp   #4
                  bcc   :spazio
+* Codes four to seven carry a variable with them and stand for what it
+* holds: a number, a verb's name, the name of an object or a character.
+* The byte was being eaten and nothing put in its place, which is why
+* the phone company's "You owe $" came out with no figure after it.
+                 sta   CodMsg
                  jsr   FetchB
+                 jsr   ReadVar
+                 ldx   CodMsg
+                 cpx   #4
+                 bne   :nonnum
+                 jsr   MsgNumero
+                 bra   :spazio
+:nonnum          cpx   #5
+                 bne   :nonverbo
+                 jsr   MsgNomeVerbo
+                 bra   :spazio
+:nonverbo        cpx   #6
+                 bne   :spazio
+                 jsr   MsgNomeDi
                  bra   :spazio
 
 :stampabile      jsr   PushMsg
 :spazio          lda   ChTmp
                  and   #$0080
-                 beq   :lp
-                 ldy   PC                   ; bit 7 is "space follows",
-                 lda   [zpCode],y           ; except before a control code
-                 and   #$007F               ; or the end of the string:
-                 cmp   #8                   ; that extra space made Annie's
-                 bcc   :lp                  ; TV lines 41 characters and
+                 beq   :torna
+                 ldy   PC                   ; bit 7 is "space follows", but
+                 lda   [zpCode],y           ; not before the end of the
+                 and   #$007F               ; string or a line break: that
+                 cmp   #4                   ; extra space made Annie's
+                 bcc   :torna               ; TV lines 41 characters and
                  lda   #' '                 ; they ran off the screen.
                  jsr   PushMsg
-                 bra   :lp
+:torna           brl   :lp
 
 :fine            lda   #0
                  jsr   PushMsg
@@ -9743,6 +9749,89 @@ ProssimaPagina   ldx   MsgPag
                  clc
                  rts
 :basta           sec
+                 rts
+
+*=======================================================================
+* What the string's codes four to six stand for, into the message
+*=======================================================================
+* MsgNumero - A is the number, written out in decimal with no leading
+* zeroes. Up to five figures: a variable is a word, and the fares and
+* bills the game quotes go past three.
+MsgNumero        sta   DecVal
+                 stz   DecFatto
+                 ldx   #0
+:pot             lda   Dieci,x
+                 beq   :ultima
+                 sta   DecPot
+                 phx
+                 jsr   MsgCifra
+                 plx
+                 inx
+                 inx
+                 bra   :pot
+:ultima          lda   DecVal               ; the units always go out
+                 clc
+                 adc   #'0'
+                 jmp   PushMsg
+
+* One figure: how many times DecPot goes into what is left.
+MsgCifra         ldy   #0
+:lp              lda   DecVal
+                 cmp   DecPot
+                 bcc   :fatta
+                 sec
+                 sbc   DecPot
+                 sta   DecVal
+                 iny
+                 bra   :lp
+:fatta           tya
+                 bne   :scrivo
+                 lda   DecFatto             ; leading zeroes are not written
+                 beq   :niente
+                 tya
+:scrivo          clc
+                 adc   #'0'
+                 jsr   PushMsg
+                 lda   #1
+                 sta   DecFatto
+:niente          rts
+
+Dieci            dw    10000,1000,100,10,0
+
+* MsgNomeVerbo - A is the verb, written out by name.
+MsgNomeVerbo     sta   VerbWanted
+                 jsr   TrovaVerbo
+                 bcs   :fine
+                 txa
+                 jsr   NomeOffVerbo
+                 clc
+                 adc   #VerbName
+                 sta   zpStr
+                 lda   #^VerbName
+                 sta   zpStr+2
+                 jmp   MsgDaStr
+:fine            rts
+
+* MsgNomeDi - A is an object or a character, written out by name.
+MsgNomeDi        jsr   TrovaNomeDi
+                 bcs   :fine
+                 jmp   MsgDaStr
+:fine            rts
+
+* MsgDaStr - the string at zpStr into the message. The at signs that pad
+* an object's name out to a fixed length are not part of it.
+MsgDaStr         ldy   #0
+:lp              phy
+                 lda   [zpStr],y
+                 and   #$00FF
+                 beq   :fine
+                 cmp   #'@'
+                 beq   :salta
+                 jsr   PushMsg
+:salta           ply
+                 iny
+                 bra   :lp
+:fine            ply
                  rts
 
 PushMsg          ldx   MsgLen
@@ -12397,7 +12486,28 @@ DovE             sta   NomeChi
 
 :oggetto         jsr   CercaObcd
                  bcs   :no
-                 ldy   #11
+                 lda   ObjDove
+                 beq   :nelluogo
+* Something being carried is wherever the one carrying it is, which is
+* what getObjectOrActorXY answers for WIO_INVENTORY. Measuring instead to
+* the spot it was picked up from is why Zak said "I can't reach it" about
+* the remote control in his own pocket unless he walked back to the
+* cushion he took it off.
+                 lda   NomeChi
+                 sta   ObjNo
+                 jsr   GetObjOwner
+                 jsr   ActIndex
+                 bcs   :no
+                 lda   ActRoom,x
+                 cmp   CurRoom
+                 bne   :no                  ; whoever has it is not here
+                 lda   ActX,x
+                 sta   PosX
+                 lda   ActY,x
+                 sta   PosY
+                 clc
+                 rts
+:nelluogo        ldy   #11
                  lda   [zpNome],y
                  and   #$00FF
                  sta   PosX                 ; already in units of eight
@@ -13140,10 +13250,22 @@ ScriviNomeVerbo  txa
 * power cord, remote). Treating them as people wrote a blank ActName
 * on the sentence: "Use " with nothing after it, which is how the cord
 * and the remote looked like they were not there.
-ScriviNomeDi     sta   NomeChi
+ScriviNomeDi     jsr   TrovaNomeDi
+                 bcs   :senza
+                 jmp   DrawStrFino
+:senza           rts
+
+*=======================================================================
+* TrovaNomeDi - A = object or actor: leaves its name at zpStr
+*=======================================================================
+* Carry set if there is no name to be had. Split out of ScriviNomeDi so
+* that a message can put the same name in its own text instead of
+* straight on the panel.
+TrovaNomeDi      sta   NomeChi
                  jsr   NomeSostituito       ; did the game rename it?
                  bcs   :normale
-                 jmp   DrawStrFino
+                 clc
+                 rts
 :normale         lda   NomeChi
                  cmp   #NACT
                  bcs   :oggetto
@@ -13162,7 +13284,8 @@ ScriviNomeDi     sta   NomeChi
                  sta   zpStr
                  lda   #^ActName
                  sta   zpStr+2
-                 jmp   DrawStrFino
+                 clc
+                 rts
 
 :oggetto         jsr   CercaObcd            ; in hand or in the room
                  bcs   :fine
@@ -13174,8 +13297,10 @@ ScriviNomeDi     sta   NomeChi
                  lda   zpNome+2
                  adc   #0
                  sta   zpStr+2
-                 jmp   DrawStrFino
-:fine            rts
+                 clc
+                 rts
+:fine            sec
+                 rts
 
 *=======================================================================
 * CercaObcd - the description of object NomeChi, in hand or in the room
@@ -17300,6 +17425,9 @@ IdxDx            ds    2
 RunIdx           ds    2
 RigaCol          ds    2
 RigaMrg          ds    2
+CodMsg           ds    2
+DecPot           ds    2
+DecFatto         ds    2
 FineIdx          ds    2
 SxVuoto          ds    2
 DxVuoto          ds    2
