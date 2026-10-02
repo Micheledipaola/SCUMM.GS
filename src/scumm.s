@@ -4602,41 +4602,58 @@ XdiColonna       sta   TmpW
 * ListaOff says which of the two lists. A run that reaches the foot of
 * the column is cut there and the rest of it is left in CelRun for the
 * next column, exactly as the per-pixel path leaves it.
-DecodeColonna    lda   ListaOff
-                 sta   RunIdx
+DecodeColonna    ldx   ListaOff             ; the list index stays in X
                  stz   RigaCol
 :lp              lda   CelRun
                  bne   :c_e
-                 jsr   ProssimoRun
-:c_e             lda   CelH
-                 sec
-                 sbc   RigaCol              ; rows left in the column
-                 beq   :fine
-                 cmp   CelRun               ; the run may stop sooner
-                 bcc   :cap
-                 lda   CelRun
-:cap             sta   RunNow
-                 lda   CelRun
-                 sec
-                 sbc   RunNow
+* ProssimoRun, inlined and working through Y so that X can hold the list
+* index for the whole column. Colour and length share a byte, a length of
+* zero means the length is in the byte after, and the file's colour zero
+* is transparent, which CelPal already carries as $FFFF.
+                 ldy   CelSrc
+                 lda   [zpStr],y
+                 and   #$00FF
+                 inc   CelSrc
+                 sta   TmpW
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 and   #$001E
+                 tay
+                 lda   CelPal,y
+                 sta   CelColor
+                 lda   TmpW
+                 and   #$000F
                  sta   CelRun
-                 lda   RigaCol
+                 bne   :c_e
+                 ldy   CelSrc
+                 lda   [zpStr],y
+                 and   #$00FF
+                 sta   CelRun
+                 inc   CelSrc
+:c_e             lda   RigaCol
                  clc
-                 adc   RunNow
-                 sta   RigaCol
-                 ldx   RunIdx
-                 lda   CelColor             ; $FFFF is already transparent
+                 adc   CelRun
+                 cmp   CelH
+                 bcc   :tutto
+                 sec                      ; it reaches the foot of the
+                 sbc   CelH               ; column: what is left of it
+                 sta   CelRun             ; belongs to the next one
+                 lda   CelH
+                 bra   :metti
+:tutto           stz   CelRun
+:metti           sta   RigaCol
+                 lda   CelColor
                  sta   RunCol,x
                  lda   RigaCol
                  sta   RunEnd,x
                  inx
                  inx
-                 stx   RunIdx
+                 lda   RigaCol
                  cmp   CelH
                  bcc   :lp
-:fine            ldx   RunIdx               ; a stop, in case the merge
-                 lda   #$7FFF               ; ever looks one past the end
-                 sta   RunEnd,x
+                 lda   #$7FFF             ; a stop, in case the merge ever
+                 sta   RunEnd,x           ; looks one past the end
                  lda   #$FFFF
                  sta   RunCol,x
                  rts
@@ -4762,19 +4779,16 @@ BlitCoppia       lda   PairX
 :pdxav           iny
                  iny
                  bra   :psxfatto
-:pdxfatto        jsr   ValoriSx
-                 jsr   ValoriDx
+:pdxfatto        anop
 
 :merge           lda   RigaMrg
                  cmp   RigaHi
                  bcc   :c_e
                  rts
-:c_e             lda   RunEnd,x
-                 sta   FineSx
-                 lda   RunEnd,y
-                 cmp   FineSx               ; the stretch ends where the
-                 bcc   :piccolo             ; first of the two ends
-                 lda   FineSx
+:c_e             lda   RunEnd,y             ; the stretch ends where the
+                 cmp   RunEnd,x             ; first of the two runs ends
+                 bcc   :piccolo
+                 lda   RunEnd,x
 :piccolo         sta   FineMrg
                  cmp   RigaHi               ; or at the foot of the room
                  bcc   :contok
@@ -4784,16 +4798,27 @@ BlitCoppia       lda   PairX
                  beq   :avanti
                  bmi   :avanti
                  sta   ContaR
-                 lda   CelY
-                 clc
-                 adc   RigaMrg
-                 sta   RigaY
-                 lda   SxVuoto
-                 bne   :sxvuoto
-                 lda   DxVuoto
-                 bne   :solosx
-                 lda   ValSx
-                 ora   ValDx
+                 lda   RigaMrg              ; the row it starts on, doubled
+                 clc                        ; for the row tables
+                 adc   CelY
+                 asl   a
+                 sta   RigaIdx
+* Which of the four cases this stretch is. Worked out here, from the two
+* runs the lists are on: both lists move on about as often as a stretch
+* ends, so doing it when one moves costs two goes instead of one.
+                 lda   RunCol,x
+                 cmp   #$FFFF
+                 beq   :sxvuoto
+                 asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 sta   ValSx
+                 lda   RunCol,y
+                 cmp   #$FFFF
+                 beq   :solosx
+                 sta   ValDx
+                 ora   ValSx
                  sta   ValPair
                  stx   IdxSx
                  sty   IdxDx
@@ -4803,8 +4828,10 @@ BlitCoppia       lda   PairX
                  sty   IdxDx
                  jsr   RigheSx
                  bra   :torna
-:sxvuoto         lda   DxVuoto
-                 bne   :avanti              ; both of them transparent
+:sxvuoto         lda   RunCol,y
+                 cmp   #$FFFF
+                 beq   :avanti              ; both of them transparent
+                 sta   ValDx
                  stx   IdxSx
                  sty   IdxDx
                  jsr   RigheDx
@@ -4817,58 +4844,19 @@ BlitCoppia       lda   PairX
                  bne   :nosx
                  inx
                  inx
-                 jsr   ValoriSx
 :nosx            lda   FineMrg
                  cmp   RunEnd,y
                  bne   :nodx
                  iny
                  iny
-                 jsr   ValoriDx
 :nodx            brl   :merge
 
-* The colour of the run each list is on, kept ready so the merge does not
-* work it out again for every stretch. The left-hand one is held already
-* shifted into the high nibble.
-ValoriSx         lda   RunCol,x
-                 cmp   #$FFFF
-                 beq   :vuoto
+RigheDue         ldx   RigaIdx
+                 lda   ContaR
                  asl   a
-                 asl   a
-                 asl   a
-                 asl   a
-                 sta   ValSx
-                 stz   SxVuoto
-                 rts
-:vuoto           lda   #1
-                 sta   SxVuoto
-                 rts
-
-ValoriDx         lda   RunCol,y
-                 cmp   #$FFFF
-                 beq   :vuoto
-                 sta   ValDx
-                 stz   DxVuoto
-                 rts
-:vuoto           lda   #1
-                 sta   DxVuoto
-                 rts
-
-* The three of them walk the rows with the row offsets in the index
-* registers and the accumulator eight bits wide from end to end, the way
-* the old per-pixel path did: a row costs two table reads and a store,
-* not four sixteen-bit sums through memory. zpCel and zpCelM already
-* point at this pair of columns, so the offset is the row's and nothing
-* else.
-
-* RigheDue - both pixels of the byte are painted.
-RigheDue         lda   RigaY
                  clc
-                 adc   ContaR
-                 asl   a
+                 adc   RigaIdx
                  sta   FineIdx
-                 lda   RigaY
-                 asl   a
-                 tax
                  lda   PairBits
                  bne   :conmask
 * Nothing covers him here, so there is nothing to ask: a store a row.
@@ -4919,14 +4907,12 @@ RigheDue         lda   RigaY
                  rts
 
 * RigheSx - only the left pixel is painted.
-RigheSx          lda   RigaY
+RigheSx          ldx   RigaIdx
+                 lda   ContaR
+                 asl   a
                  clc
-                 adc   ContaR
-                 asl   a
+                 adc   RigaIdx
                  sta   FineIdx
-                 lda   RigaY
-                 asl   a
-                 tax
                  sep   #$20
                  mx    %10
 :lp              lda   BitSx
@@ -4949,14 +4935,12 @@ RigheSx          lda   RigaY
                  rts
 
 * RigheDx - only the right pixel is painted.
-RigheDx          lda   RigaY
+RigheDx          ldx   RigaIdx
+                 lda   ContaR
+                 asl   a
                  clc
-                 adc   ContaR
-                 asl   a
+                 adc   RigaIdx
                  sta   FineIdx
-                 lda   RigaY
-                 asl   a
-                 tax
                  sep   #$20
                  mx    %10
 :lp              lda   BitDx
@@ -17429,6 +17413,8 @@ CodMsg           ds    2
 DecPot           ds    2
 DecFatto         ds    2
 FineIdx          ds    2
+RigaIdx          ds    2
+CasoPair         ds    2
 SxVuoto          ds    2
 DxVuoto          ds    2
 RigaDa           ds    2
