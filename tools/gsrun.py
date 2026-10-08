@@ -179,7 +179,7 @@ class Mondo:
         self.tasti = None
 
     # --- dynamic memory ---------------------------------------------------
-    def alloca(self, quanti):
+    def alloca(self, quanti, attr=0):
         """One block, page aligned and nothing more.
 
         The real Memory Manager does not line blocks up with banks, and
@@ -189,6 +189,8 @@ class Mondo:
         pointer can.
         """
         indirizzo = self.prossimo
+        if attr & 0x10 and (indirizzo & 0xFFFF) + quanti > 0x10000:
+            indirizzo = (indirizzo + 0xFFFF) & ~0xFFFF     # attrNoCross
         self.prossimo = (indirizzo + quanti + 0xFF) & ~0xFF
         return indirizzo
 
@@ -279,7 +281,7 @@ class Mondo:
             attr = self.pop16()
             self.pop16()                            # userID
             size = self.pop32()
-            indirizzo = self.alloca(size)
+            indirizzo = self.alloca(size, attr)
             h = self.nuovo_handle(indirizzo)
             self.metti32(h)
             c.p &= ~0x01                            # carry clear: it worked

@@ -78,8 +78,14 @@ DBGTOP           =     192            ; the last row, for faults
 CRED1TOP         =     146            ; interpreter credit, just under the title
 MSGMAX           =     240
 NNOMI            =     10             ; renamed objects
-INVSLOTS         =     16             ; objects that can be carried
-INVLEN           =     256            ; the game's longest obcd fits
+INVSLOTS         =     80             ; objects that can be carried, as
+*                                     ; in the reference interpreter
+INVARENA         =     8192           ; their descriptions, packed one
+*                                     ; after another: the longest obcd
+*                                     ; in Zak is 467 bytes, and a fixed
+*                                     ; slot wide enough for that one,
+*                                     ; eighty times over, would not fit
+*                                     ; in the bank
 PREPLEN          =     6
 NACT             =     25             ; the game's actors
 NCOST            =     6              ; costumes held in memory at once
@@ -135,9 +141,11 @@ RAWSIZE          =     41472          ; the biggest .LFL: 25510 on DOS,
 *                                        but 40861 in the Amiga release,
 *                                        whose rooms carry more picture
 PIXSIZE          =     65536          ; 960*128 at half a byte = 61440
-SLOTS            =     12             ; scripts at once
+SLOTS            =     20             ; scripts at once (ScummVM has far more: with
+*                                        twelve, the airport already used ten before the
+*                                        first click and a script could fail to start)
 SLOTLEN          =     $0C00          ; 3072 bytes per script (the
-RESSIZE          =     36864          ; biggest real one takes 2674)
+RESSIZE          =     $F000          ; biggest real one takes 2674)
 MASKSIZE         =     20480          ; 960/8 by 128: one bit per pixel
 
 *----- the game --------------------------------------------------------
@@ -333,7 +341,7 @@ Start            phk
 * into the bank by itself, and the offsets in here never exceed the
 * 61440 bytes of one room.
                  PushLong #RAWSIZE
-                 PushWord #$C000            ; locked, fixed, one bank only
+                 PushWord #$C010            ; locked, fixed, never crossing a bank
                  jsr   GetBlock
                  bcc   :rawok
 :nomem0          brl   NoMem
@@ -344,7 +352,7 @@ Start            phk
                  sta   zpRaw+2
 
                  PushLong #RESSIZE
-                 PushWord #$C000
+                 PushWord #$C010
                  jsr   GetBlock
                  bcs   :nomem0
                  lda   BlockLo
@@ -353,7 +361,7 @@ Start            phk
                  sta   zpRes+2
 
                  PushLong #PIXSIZE
-                 PushWord #$C000            ; locked and fixed
+                 PushWord #$C010            ; locked and fixed
                  jsr   GetBlock
                  bcs   :nomem0
                  lda   BlockLo
@@ -363,7 +371,7 @@ Start            phk
                  sta   zpPix+2
 
                  PushLong #PIXSIZE
-                 PushWord #$C000
+                 PushWord #$C010
                  jsr   GetBlock
                  bcs   :nomem0
                  lda   BlockLo
@@ -372,7 +380,7 @@ Start            phk
                  sta   zpBg+2
 
                  PushLong #MASKSIZE
-                 PushWord #$C000
+                 PushWord #$C010
                  jsr   GetBlock
                  bcs   :nomem
                  lda   BlockLo
@@ -384,7 +392,7 @@ Start            phk
 * stamped on it. With it, putting one object's rectangle back costs that
 * rectangle instead of decoding the whole room's mask again.
                  PushLong #MASKSIZE
-                 PushWord #$C000
+                 PushWord #$C010
                  jsr   GetBlock
                  bcs   :nomem
                  lda   BlockLo
@@ -393,7 +401,7 @@ Start            phk
                  sta   zpMask0+2
 
                  PushLong #COSTSIZE
-                 PushWord #$C000
+                 PushWord #$C010
                  jsr   GetBlock
                  bcc   :memok
 :nomem           brl   NoMem
@@ -1123,7 +1131,18 @@ TastoGioco       sta   TastoQ
                  bcc   :ragazzo             ; 1, 2, 3
                  cmp   #'5'
                  bne   :niente
-                 lda   #5                   ; the disk
+                 lda   IsZak
+                 beq   :disco
+                 lda   CutLiv
+                 bne   :disco               ; inside a cutscene: leave it alone
+                 lda   Vars+VO_CURSOR
+                 cmp   #2
+                 bcc   :disco
+                 cmp   #4
+                 bcs   :disco
+                 lda   #1                   ; scripts such as the devotee's leave 2 behind
+                 sta   Vars+VO_CURSOR       ; and script 4 only opens the disk on 1
+:disco           lda   #5                   ; the disk
                  bra   :manda
 :ragazzo         sec
                  sbc   #'0'
@@ -5455,13 +5474,27 @@ ResetVM          lda   #$FFFF               ; no room's mask is cached yet
                  inx
                  cpx   #MAXOBJ
                  bcc   :obj
+                 ldx   #0                   ; no pseudo-room names yet:
+                 lda   #0                   ; the boot script registers them
+:mappa           sep   #$20
+                 mx    %10
+                 sta   MappaStanze,x
+                 rep   #$20
+                 mx    %00
+                 inx
+                 cpx   #128
+                 bcc   :mappa
+
                  lda   #0
                  ldx   #0
 :inv             sta   InvObj,x
+                 sta   InvPos,x
+                 sta   InvLen,x
                  inx
                  inx
                  cpx   #INVSLOTS*2
                  bcc   :inv
+                 stz   InvTop
                  stz   SentN
                  stz   DiscoAperto
 
@@ -5591,12 +5624,33 @@ FreeSlot         ldx   #0
                  inx
                  cpx   #SLOTS*2
                  bcc   :lp
+                 inc   SlotFail             ; a script that could not start
                  sec
                  rts
-:trovato         txa
+:trovato         phx
+                 jsr   ContaSlot
+                 plx
+                 txa
                  lsr   a
                  clc
                  rts
+
+* ContaSlot - note the most scripts ever running together (the debug line
+* shows it), so a full table can be seen instead of guessed at.
+ContaSlot        ldx   #0
+                 ldy   #1                   ; the one about to start
+:lp              lda   SlotStat,x
+                 beq   :vuoto
+                 iny
+:vuoto           inx
+                 inx
+                 cpx   #SLOTS*2
+                 bcc   :lp
+                 cpy   SlotMax
+                 bcc   :fine
+                 beq   :fine
+                 sty   SlotMax
+:fine            rts
 
 *=======================================================================
 * LoadResource - bring the resource at FileNo/ScrOff into the store
@@ -6147,7 +6201,24 @@ CamMoved         lda   CamCur
                  lsr   a
                  lsr   a
                  sta   Vars+VO_CAMPOS
-                 rts
+* Maniac only: the camera trails the character by up to ten columns, so
+* a script waiting for the camera to reach a column (Edna's 153 waits
+* for 47) fired only when Dave had gone ten columns further, almost on
+* top of her. Report the followed character's column when he is ahead of
+* the camera, so such waits fire where the original player saw them.
+                 lda   IsZak
+                 bne   :fineCam
+                 lda   CamFollow
+                 jsr   ActIndex
+                 bcs   :fineCam
+                 lda   ActRoom,x
+                 cmp   CurRoom
+                 bne   :fineCam
+                 lda   ActX,x
+                 cmp   Vars+VO_CAMPOS
+                 bcc   :fineCam
+                 sta   Vars+VO_CAMPOS
+:fineCam         rts
 
 *=======================================================================
 * EgoX - where the player character is. Carry set if unknown.
@@ -6864,8 +6935,11 @@ DentroCasella    pha
                  iny
                  iny
                  lda   [zpRaw],y
+                 sta   BoxFlag
                  and   #$0080
                  beq   :sbloccata
+                 jsr   SoloPerIlCapo
+                 bcc   :aperto
                  lda   BoxLockOk            ; 0: skip locked (walk)
                  beq   :no
                  bra   :aperto              ; 1 or 2: locked matches
@@ -6976,6 +7050,29 @@ DistanzaPunto    lda   BoxQx
                  rts
 
 *=======================================================================
+* SoloPerIlCapo - carry clear if this hidden box is open to this actor
+*=======================================================================
+* $80 is "invisible", $20 is "the player's own", and the reference reads
+* the two together: a box carrying both is hidden from whoever the player
+* is driving and open to everybody else. Lou's selling and buying booths
+* in room 7 are $A0, and with $80 alone taken as "nobody comes in here"
+* he stopped on the near edge of the counter - the destination the script
+* gives him, (22,47), is inside that box, and snapping it out of there
+* left him two steps short, outside the booth.
+* The box in BoxFlag, the actor in ActIdx.
+SoloPerIlCapo    lda   BoxFlag
+                 and   #$0020
+                 beq   :no
+                 lda   ActIdx               ; callers must have ActIdx right:
+                 lsr   a                    ; a stale one lets the player into
+                 cmp   Vars+VO_EGO          ; a box that is not his
+                 beq   :no
+                 clc
+                 rts
+:no              sec
+                 rts
+
+*=======================================================================
 * AvvicinaPunto - bring (BoxQx,BoxQy) inside the nearest box
 *=======================================================================
 * Leaves the chosen box number in BoxScelta, or $FFFF if the room has
@@ -7014,8 +7111,11 @@ AvvicinaPunto    lda   #$FFFF
                  iny
                  iny
                  lda   [zpRaw],y
+                 sta   BoxFlag
                  and   #$0080
                  beq   :sbloccata
+                 jsr   SoloPerIlCapo
+                 bcc   :misura
                  lda   BoxLockOk
                  beq   :prossima
                  bra   :misura
@@ -7271,8 +7371,9 @@ AvviaCamminoQui  lda   IsZak
                  jsr   ProssimaTappa
                  ldx   ActIdx
                  lda   ActMoving,x
-                 beq   :mmfine
-                 lda   ActDstX,x
+                 bne   :mmsicam
+                 jmp   FermaPose            ; see the note in the Zak branch
+:mmsicam         lda   ActDstX,x
                  cmp   ActX,x
                  bne   :mmcam
                  lda   ActDstY,x
@@ -7342,10 +7443,18 @@ AvviaCamminoQui  lda   IsZak
                  lda   #1
                  sta   ActMoving,x
                  jsr   ProssimaTappa
+* The trip was over before it began - he is already standing on the
+* point he was sent to. We had set ActMoving to 1 a moment ago and
+* ProssimaTappa has just cleared it, so nobody is left to put him back
+* on his feet: the legs keep the chore of the walk he had just finished
+* and go on moving on the spot. In front of the television, where the
+* script sends him twice to the same place, that is where Zak kept
+* walking after he had arrived.
                  ldx   ActIdx
                  lda   ActMoving,x
-                 beq   :fine
-                 lda   ActDstX,x            ; already there: do not start
+                 bne   :sicam
+                 jmp   FermaPose
+:sicam           lda   ActDstX,x            ; already there: do not start
                  cmp   ActX,x               ; the walk cycle on the spot
                  bne   :cammina
                  lda   ActDstY,x
@@ -8510,20 +8619,24 @@ hUnlessState     lda   Op
 * The object description carries a class byte at obcd+6: the game passes
 * a mask and goes on only if all of them are there. An object that does
 * not exist in this room counts as "does not have them".
+* The class byte is byte 6 of the object's own description, and the
+* description of something the player is carrying lives in the inventory
+* arena, not in the room. Asking only the room, an object in hand had no
+* class at all: the CashCard reader on the bus starts with
+* "unless the thing in my hand is of class 128", so paying the fare
+* always fell through to script 3 - "that doesn't work".
 hClassOf         jsr   VOW1
                  sta   ObjFound
+                 sta   NomeChi
                  jsr   VOB2
-                 sta   TmpW                 ; the classes asked for
-                 jsr   TrovaOggetto
+                 sta   ClasseChiesta        ; the classes asked for
+                 jsr   CercaObcd            ; in hand as well as in the room
                  bcs   :falso
-                 lda   ObjCd
-                 clc
-                 adc   #6
-                 tay
-                 lda   [zpRaw],y
+                 ldy   #6
+                 lda   [zpNome],y
                  and   #$00FF
-                 and   TmpW
-                 cmp   TmpW
+                 and   ClasseChiesta
+                 cmp   ClasseChiesta
                  bne   :falso
                  jsr   SkipW
                  stz   Esito
@@ -8718,12 +8831,18 @@ hRoomEgo         jsr   VOW1
                  asl   a                    ; the byte counts in eights
                  asl   a                    ; pixels, actor y in twos
                  sta   BoxQy
-                 jsr   AvvicinaPunto
-
+* Who is being placed has to be known BEFORE the point is snapped: the
+* hidden boxes marked "the player's own" are open to everybody except
+* him, and that is read off ActIdx. Left over from whoever walked last,
+* the player came in through the baker's window box in room 3 and stood
+* on the brick wall instead of the steps.
                  lda   Vars+VO_EGO
                  jsr   ActIndex
                  bcs   :senzaporta
                  stx   ActIdx
+                 jsr   AvvicinaPunto
+
+                 ldx   ActIdx
                  lda   BoxQx
                  sta   ActX,x
                  lda   BoxQy
@@ -9068,6 +9187,11 @@ PadreOk          lda   ObjCd
                  and   #$0080
                  beq   :zero
                  lda   #8
+* Not a mask: the state the parent has to be in for this one to show.
+* Bit 7 of the child's y byte says "my container must be ON"; clear, it
+* says "my container must be OFF". Testing it as a mask made the second
+* case always true - the fish went on swimming over the bare dresser
+* after the bowl had been picked up, and the sushi stayed behind.
 :zero            sta   PadreMask
                  lda   PadreCd
                  clc
@@ -9091,7 +9215,7 @@ PadreOk          lda   ObjCd
                  lda   [zpRaw],y
                  sta   PadreNo
                  jsr   StatoDiPadre
-                 and   PadreMask
+                 and   #8
                  cmp   PadreMask
                  bne   :no
                  bra   :giro
@@ -11496,7 +11620,14 @@ ObjectAt         lda   RoomH
                  lda   DiscoAperto
                  bne   :mmok
                  jsr   NomeC_e
-                 bcs   :salto
+                 bcc   :mmok
+                 lda   ObjCd                ; nameless, but with a verb table
+                 clc                        ; (the destination screen's OK,
+                 adc   #15                  ; Cancel and list rows): keep it
+                 tay
+                 lda   [zpRaw],y
+                 and   #$00FF
+                 beq   :salto
 :mmok            lda   ObjTabLen
                  sta   PadreLen
                  jsr   PadreOk
@@ -11857,7 +11988,11 @@ hSetElev         jsr   VOB1
                  bcs   :fine
                  stx   ActIdx
                  lda   ActArg
-                 sta   ActElev,x
+                 and   #$00FF
+                 cmp   #$0080               ; a signed byte: 252 is -4 (the
+                 bcc   :pos                 ; plane seat sinks Zak into it)
+                 ora   #$FF00
+:pos             sta   ActElev,x
                  jsr   SegnaAttore
 :fine            stz   Esito
                  rts
@@ -12241,22 +12376,16 @@ CopiaInMano      stz   InvIdx
                  sec
                  rts
 
-:trovato         ldy   ObjCd
-                 lda   [zpRaw],y
+:trovato         ldy   ObjCd                ; the length is the first word
+                 lda   [zpRaw],y            ; of the description itself
                  sta   CopiaQ
                  beq   :no
-                 cmp   #INVLEN
-                 bcc   :ciscappa
-                 lda   #INVLEN
-                 sta   CopiaQ
-:ciscappa        lda   InvIdx               ; InvBuf + slot*256
-                 asl   a
-                 asl   a
-                 asl   a
-                 asl   a
-                 asl   a
-                 asl   a
-                 asl   a
+                 clc                        ; and it has to fit in what is
+                 adc   InvTop               ; left of the arena. Clamping it
+                 bcs   :no                  ; instead, as a fixed slot had
+                 cmp   #INVARENA+1          ; to, cut the end off the verb
+                 bcs   :no                  ; table of anything big - the
+                 lda   InvTop               ; radio in Maniac is 292 bytes
                  sta   CopiaDst
 
                  lda   zpRaw                ; where to copy from
@@ -12287,9 +12416,118 @@ CopiaInMano      stz   InvIdx
                  ldx   InvIdx
                  lda   ObjNo
                  sta   InvObj,x
+                 lda   CopiaDst
+                 sta   InvPos,x
+                 lda   CopiaQ
+                 sta   InvLen,x
+                 clc
+                 adc   InvTop
+                 sta   InvTop
                  clc
                  rts
 :no              sec
+                 rts
+
+*=======================================================================
+* TogliDiMano - the player no longer carries object A
+*=======================================================================
+* setOwnerOf(obj, 0) is how a script throws an object away, and the
+* reference frees its inventory slot there (clearOwnerOf). Without that
+* the slots filled up for good: in Zak the tool kit's four tools were
+* bought - the script does pickupObject on each of them - and then never
+* appeared, because there was no slot left to copy them into and
+* CopiaInMano says no in silence.
+* The descriptions are packed one after another, so what sits above the
+* hole comes down, and every offset that pointed up there comes down
+* with it, including the one a script is running out of.
+TogliDiMano      sta   ToltoNo
+                 ora   #0                   ; sta leaves the flags alone
+                 beq   :fine
+                 stz   InvIdx
+:cerca           ldx   InvIdx
+                 lda   InvObj,x
+                 cmp   ToltoNo
+                 beq   :preso
+                 lda   InvIdx
+                 clc
+                 adc   #2
+                 sta   InvIdx
+                 cmp   #INVSLOTS*2
+                 bcc   :cerca
+:fine            rts                        ; he was not carrying it
+:preso           lda   ToltoNo              ; its description is about to
+                 jsr   FermaOggetto         ; move: stop its scripts first
+                 ldx   InvIdx
+                 lda   InvPos,x
+                 sta   ToltoPos
+                 lda   InvLen,x
+                 sta   ToltoLen
+                 lda   #0
+                 sta   InvObj,x
+                 sta   InvPos,x
+                 sta   InvLen,x
+
+                 lda   ToltoPos             ; the bytes above come down
+                 sta   ToltoDst
+                 clc
+                 adc   ToltoLen
+                 sta   ToltoSrc
+:sposta          lda   ToltoSrc
+                 cmp   InvTop
+                 bcs   :spostato
+                 tax
+                 sep   #$20
+                 mx    %10
+                 lda   InvBuf,x
+                 sta   ToltoByte
+                 rep   #$20
+                 mx    %00
+                 ldx   ToltoDst
+                 sep   #$20
+                 mx    %10
+                 lda   ToltoByte
+                 sta   InvBuf,x
+                 rep   #$20
+                 mx    %00
+                 inc   ToltoSrc
+                 inc   ToltoDst
+                 bra   :sposta
+:spostato        lda   InvTop
+                 sec
+                 sbc   ToltoLen
+                 sta   InvTop
+
+                 stz   InvIdx               ; and so do the offsets
+:agg             ldx   InvIdx
+                 lda   InvObj,x
+                 beq   :agg2
+                 lda   InvPos,x
+                 cmp   ToltoPos
+                 bcc   :agg2
+                 sec
+                 sbc   ToltoLen
+                 sta   InvPos,x
+:agg2            lda   InvIdx
+                 clc
+                 adc   #2
+                 sta   InvIdx
+                 cmp   #INVSLOTS*2
+                 bcc   :agg
+
+                 ldx   #0                   ; a script already running out
+:slot            lda   SlotWhere,x          ; of a description that moved
+                 cmp   #DA_MANO             ; follows it
+                 bne   :slot2
+                 lda   SlotBaseT,x
+                 cmp   ToltoPos
+                 bcc   :slot2
+                 sec
+                 sbc   ToltoLen
+                 sta   SlotBaseT,x
+:slot2           inx
+                 inx
+                 cpx   #SLOTS*2             ; every script slot
+                 bcc   :slot
                  rts
 
 hSetOwner        jsr   VOW1
@@ -12300,6 +12538,11 @@ hSetOwner        jsr   VOW1
                  lda   ObjNo
                  cmp   #MAXOBJ
                  bcs   :fine
+                 ldx   TmpW                 ; nobody owns it any more: it
+                 bne   :tienlo              ; leaves the inventory, the way
+                 jsr   TogliDiMano          ; clearOwnerOf does
+                 stz   TmpW                 ; (FermaOggetto uses TmpW too)
+:tienlo          lda   ObjNo
                  tax
                  sep   #$20
                  mx    %10
@@ -12399,22 +12642,39 @@ DistanzaFra      lda   DistB
 * walk point, so verb 253 cleared state 8 and the remote stayed buried.
                  lda   DistA
                  jsr   ActIndex
-                 bcs   :nosnap
-                 lda   ActRoom,x
-                 beq   :nosnap
-                 lda   DistB
+                 bcc   :aeattore
+                 brl   :nosnap
+:aeattore        lda   ActRoom,x
+                 bne   :astaqui
+                 brl   :nosnap
+:astaqui         lda   DistB
                  jsr   ActIndex
                  bcs   :snap
                  lda   ActRoom,x
-                 bne   :nosnap
+                 beq   :snap
+                 brl   :nosnap
+* The snap is made from DistA's point of view - Actor_v2::adjustXYToBeInBox
+* is a method on him, and the hidden-box rule asks whether he is the
+* player. But ActIdx belongs to whoever is being moved or drawn at the
+* time, and a measurement taken from inside a script must give it back
+* untouched: leaving it behind had Edna carrying off kids who were still
+* in the first room, and lost the devotee's book at the airport.
 :snap            stz   BoxLockOk
-                 lda   PosX
+                 lda   ActIdx
+                 sta   DistIdxVero
+                 lda   DistA
+                 jsr   ActIndex
+                 bcs   :chinonso
+                 stx   ActIdx
+:chinonso        lda   PosX
                  sta   BoxQx
                  sta   WalkAX               ; official walk point
                  lda   PosY
                  sta   BoxQy
                  sta   WalkAY
                  jsr   AvvicinaPunto
+                 lda   DistIdxVero          ; whoever was being moved
+                 sta   ActIdx
                  lda   BoxScelta
                  cmp   #$FFFF
                  beq   :nosnap
@@ -12483,6 +12743,14 @@ DovE             sta   NomeChi
 * An unused slot has room 0: that number is the object, not a person.
                  lda   ActRoom,x
                  beq   :oggetto
+* Somebody in another room has no place here. getObjectOrActorXY answers
+* only for an actor who isInCurrentRoom, and whoever asks gets "nowhere"
+* - which getObjActToObjActDist turns into the largest distance there is.
+* Without the test, the kids waiting outside the mansion had coordinates
+* like anybody else, and Edna, measuring from the kitchen, found them
+* within her two steps and carried them off to the dungeon one by one.
+                 cmp   CurRoom
+                 bne   :no
                  lda   ActX,x
                  sta   PosX
                  lda   ActY,x
@@ -12528,11 +12796,49 @@ DovE             sta   NomeChi
 :no              sec
                  rts
 
+*=======================================================================
+* hPseudo ($CC) - pseudoRoom: other names for a room that does exist
+*=======================================================================
+* The first byte is the real room; the ones that follow, as long as they
+* carry bit 7, are names for it. The game uses them for places that are
+* not rooms of their own: the bus parks whoever is riding inside room
+* 145, which is really room 8. We used to read the list and throw it
+* away, so 145 went to the disk as a file number, was never found, and
+* the game sat on "Loading..." for ever with no way out.
 hPseudo          jsr   FetchB
+                 sta   PseudoVera
 :lp              jsr   FetchB
-                 bne   :lp
-                 stz   Esito
+                 beq   :fine
+                 cmp   #128
+                 bcc   :lp                  ; without bit 7 it is not a name
+                 and   #$007F
+                 tax
+                 lda   PseudoVera
+                 sep   #$20
+                 mx    %10
+                 sta   MappaStanze,x
+                 rep   #$20
+                 mx    %00
+                 bra   :lp
+:fine            stz   Esito
                  rts
+
+*=======================================================================
+* StanzaFile - A = room number, out: the file that holds it
+*=======================================================================
+* Zero means there is nothing to read: either the room is zero, or it is
+* a name nobody registered.
+StanzaFile       cmp   #128
+                 bcc   :vera
+                 and   #$007F
+                 tax
+                 sep   #$20
+                 mx    %10
+                 lda   MappaStanze,x
+                 rep   #$20
+                 mx    %00
+                 and   #$00FF
+:vera            rts
 
 *=======================================================================
 * hWalkToObj ($36) - send the character to where the object is used
@@ -13320,15 +13626,8 @@ CercaObcd        stz   ObjDove
                  beq   :prossimo
                  cmp   NomeChi
                  bne   :prossimo
-                 lda   InvIdx               ; he is carrying it: the place
-                 asl   a                    ; is InvBuf + slot*INVLEN
-                 asl   a
-                 asl   a
-                 asl   a
-                 asl   a
-                 asl   a
-                 asl   a                    ; slot*2 times 128: that is 256
-                 sta   ObjBaseT
+                 lda   InvPos,x             ; he is carrying it: the place
+                 sta   ObjBaseT             ; is the one the arena gave it
                  clc
                  adc   #InvBuf
                  sta   zpNome
@@ -14040,7 +14339,10 @@ ChangeRoom       pha                        ; new room
                  bcc   :pulisci
 
                  lda   CurRoom
-                 sta   FileNo
+                 jsr   StanzaFile           ; 145 is really 8
+                 bne   :c_efile
+                 brl   :vuota
+:c_efile         sta   FileNo
                  jsr   LoadWhole
                  bcc   :caricata
                  brl   :vuota
@@ -15738,6 +16040,14 @@ DrawDbgZak       stz   TxtX
                  jsr   ScriviDbg
                  lda   CurRoom
                  jsr   DrawNum
+                 lda   #MsgSn               ; most scripts together, and how
+                 jsr   ScriviDbg            ; many could not start at all
+                 lda   SlotMax
+                 jsr   DrawNum
+                 lda   #MsgSf
+                 jsr   ScriviDbg
+                 lda   SlotFail
+                 jsr   DrawNum
 * With F on, the line says what the two objects of the power-cord puzzle
 * are doing instead of listing the characters: the whole byte of each,
 * so both the state nibble and the flags are visible. If the numbers do
@@ -16348,6 +16658,10 @@ MsgO2            asc   ' p118='
                  dfb   0
 MsgO3            asc   ' 131='
                  dfb   0
+MsgSn            asc   ' n'
+                 dfb   0
+MsgSf            asc   'f'
+                 dfb   0
 MsgZb            asc   ' b'
                  dfb   0
 MsgZk            asc   ' k'
@@ -16500,19 +16814,28 @@ TabDisco         dw    Vars,512
                  dw    ActFace,50
                  dw    ActTalk,50
                  dw    ActName,400
-                 dw    InvObj,32
-                 dw    InvBuf,4096
+                 dw    InvObj,INVSLOTS*2
+                 dw    InvPos,INVSLOTS*2
+                 dw    InvLen,INVSLOTS*2
+                 dw    InvTop,2
+                 dw    InvBuf,INVARENA
                  dw    NomiObj,NNOMI*2
                  dw    NomiBuf,NNOMI*24
                  dw    CutRoom,2
                  dw    CutCursor,2
                  dw    CutCam,2
-* The script slots: seven tables of twelve words, one after the other in
-* memory. Without them a saved game came back with nothing running - no
+* The script slots: seven tables, only their first twelve words saved
+* (the file format is the one of the twelve-slot engine). Without them a saved game came back with nothing running - no
 * timers, no background scripts - and Edna stood at her fridge for ever,
 * because the door of the kitchen only sets her on you while script 152
 * is still counting.
-                 dw    SlotNum,168
+                 dw    SlotNum,24
+                 dw    SlotStat,24
+                 dw    SlotWhere,24
+                 dw    SlotPC,24
+                 dw    SlotBaseT,24
+                 dw    SlotDelLo,24
+                 dw    SlotDelHi,24
                  dw    0,0
 
 *=======================================================================
@@ -16884,7 +17207,7 @@ ChiudiPos        jsl   $E100A8
                  adrl  CloseParm
                  rts
 
-Firma            asc   'SCUMMGS2'
+Firma            asc   'SCUMMGS3'
 
 OpTab            anop
                  dw    hStop,hPutActor,hStartMusic,hActorRoom   ; $00
@@ -17184,6 +17507,11 @@ MsgDopo          ds    2
 BoxOff           ds    2
 NumBox           ds    2
 BoxLockOk        ds    2                    ; 1: locked+walk, 2: locked only
+BoxFlag          ds    2                    ; the box's own flag byte
+ClasseChiesta    ds    2                    ; classOf: the classes asked for
+DistIdxVero      ds    2                    ; getDist: ActIdx, to be put back
+PseudoVera       ds    2                    ; pseudoRoom: the real room
+MappaStanze      ds    128                  ; room 128..255 -> the real one
 BoxPtr           ds    2
 BoxUy            ds    2
 BoxLy            ds    2
@@ -17527,8 +17855,17 @@ DitHi            ds    {128}*2             ; serves for RowOff as well
 RowOff           ds    {128}*2
 MaskRow          ds    {128}*2              ; the same table, for the mask
 ActName          ds    {25}*16              ; what the characters are called
-InvObj           ds    {16}*2               ; what is being carried
-InvBuf           ds    {16}*256             ; and their description, copied
+InvObj           ds    {80}*2               ; what is being carried
+InvPos           ds    {80}*2               ; where its description sits
+InvLen           ds    {80}*2               ; and how long it is
+InvTop           ds    2                    ; first free byte of the arena
+InvBuf           ds    {8192}               ; the descriptions themselves
+ToltoNo          ds    2
+ToltoPos         ds    2
+ToltoLen         ds    2
+ToltoSrc         ds    2
+ToltoDst         ds    2
+ToltoByte        ds    2
 InvIdx           ds    2                    ; room they were found in
 InvVisti         ds    2
 InvQuale         ds    2
@@ -17649,13 +17986,15 @@ MusPtr           ds    8
 MusEnd           ds    8
 MusLastPg        ds    8
 
-SlotNum          ds    {12}*2
-SlotStat         ds    {12}*2
-SlotWhere        ds    {12}*2
-SlotPC           ds    {12}*2
-SlotBaseT        ds    {12}*2
-SlotDelLo        ds    {12}*2
-SlotDelHi        ds    {12}*2
+SlotMax          ds    2
+SlotFail         ds    2
+SlotNum          ds    SLOTS*2
+SlotStat         ds    SLOTS*2
+SlotWhere        ds    SLOTS*2
+SlotPC           ds    SLOTS*2
+SlotBaseT        ds    SLOTS*2
+SlotDelLo        ds    SLOTS*2
+SlotDelHi        ds    SLOTS*2
 
 EventRec
 EvtWhat          ds    2

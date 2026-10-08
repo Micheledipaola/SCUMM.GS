@@ -11,37 +11,25 @@ set -e
 cd "$(dirname "$0")"
 ROOT="$PWD"
 
-# Where things are on this particular machine goes in build.local.sh,
-# which git ignores: MERLIN32, MERLIN_LIB, CADIUS, ZAK, AMIGA_2MG, DISK.
-# Nothing in this file names a path outside the repository, so a fresh
-# clone builds anywhere the tools are on PATH.
-[ -f "$ROOT/build.local.sh" ] && . "$ROOT/build.local.sh"
-
 SRC="${1:-data}"
-MERLIN32="${MERLIN32:-merlin32}"
-MERLIN_BIN="$(command -v "$MERLIN32" || echo "$MERLIN32")"
-MERLIN_HOME="$(cd "$(dirname "$MERLIN_BIN")" 2>/dev/null && pwd || echo .)"
-CADIUS="${CADIUS:-cadius}"
-# Merlin32 1.2 wants the macro folder as an argument and treats a CR in
-# *.Macs.s as part of the opcode, so MAC never matches on the toolkit
-# files as shipped: give it a Unix-LF copy. Merlin32 1.1 takes no such
-# argument and ships no Library, so the whole step is skipped there.
-MACRO_DIR=""
-MERLIN_LIB="${MERLIN_LIB:-$MERLIN_HOME/Library}"
-if [ -d "$MERLIN_LIB" ]; then
-  MACRO_DIR="$ROOT/macros"
-  mkdir -p "$MACRO_DIR/4"
-  python3 - "$MERLIN_LIB" "$MACRO_DIR" <<'MACPY'
+MERLIN32="${MERLIN32:-/Users/Michele/EMU/IIGS/Merlin32/Merlin32}"
+MERLIN_HOME="$(cd "$(dirname "$MERLIN32")" && pwd)"
+CADIUS="${CADIUS:-$ROOT/tools/bin/cadius}"
+# Merlin32 1.2 treats CR in *.Macs.s as part of the opcode, so MAC never
+# matches. Give it a Unix-LF copy of the toolkit macros.
+MACRO_DIR="$ROOT/macros"
+mkdir -p "$MACRO_DIR"
+python3 - "$MERLIN_HOME/Library" "$MACRO_DIR" <<'PY'
 import sys
 from pathlib import Path
 src, dst = Path(sys.argv[1]), Path(sys.argv[2])
 for p in src.glob('*.Macs.s'):
     (dst / p.name).write_bytes(p.read_bytes().replace(b'\r\n', b'\n').replace(b'\r', b'\n'))
-MACPY
-  for m in Util Locator Mem Misc Event Qd Sound QdAux Window Menu Ctl Line Dialog Std List; do
-    [ -f "$MACRO_DIR/${m}.Macs.s" ] && cp "$MACRO_DIR/${m}.Macs.s" "$MACRO_DIR/4/${m}.Macs"
-  done
-fi
+PY
+mkdir -p "$MACRO_DIR/4"
+for m in Util Locator Mem Misc Event Qd Sound QdAux Window Menu Ctl Line Dialog Std List; do
+  cp "$MACRO_DIR/${m}.Macs.s" "$MACRO_DIR/4/${m}.Macs"
+done
 
 if [ ! -f src/fontdata.s ]; then
   echo "==> font: the one drawn for this project"
@@ -50,7 +38,7 @@ else
   echo "==> font: src/fontdata.s"
 fi
 
-DISK="${DISK:-$ROOT/build/SCUMM.2mg}"
+DISK="$ROOT/../SCUMM.2mg"
 # Save games are SAVE0..SAVE9 next to the LFL files (MM/ or ZAK/).
 # CREATEVOLUME wipes the volume, so pull them off first and put them back.
 KEEP_SAVES="$ROOT/keep_saves"
@@ -83,13 +71,19 @@ preserve_saves() {
 
 echo "==> 65816 assembly"
 # Merlin32 v1.2: merlin32 [-V] <macro_folder> <source>
-if [ -n "$MACRO_DIR" ]; then
-  "$MERLIN32" -V "$MACRO_DIR" "$ROOT/src/scumm.s"
-else
-  "$MERLIN32" -V "$ROOT/src/scumm.s"
-fi
+"$MERLIN32" -V "$MACRO_DIR" "$ROOT/src/scumm.s"
 
+# Every disk we can lay hands on is searched, and the last one wins: so a
+# disk played on the real machine, dropped into incoming/, beats whatever
+# the last build left behind. Saved games live only inside the .2mg, so
+# without that folder a new build always starts from nothing.
+preserve_saves "$ROOT/build/SCUMM.2mg"
 preserve_saves "$DISK"
+shopt -s nullglob
+for img in "$ROOT"/incoming/*.2mg "$ROOT"/incoming/*.po "$ROOT"/incoming/*.2MG; do
+  preserve_saves "$img"
+done
+shopt -u nullglob
 
 echo "==> disk"
 rm -rf stage build/SCUMM.2mg
@@ -108,7 +102,8 @@ if ! ls stage/MM/L??.LFL >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ -n "$ZAK" ] && [ -d "$ZAK" ]; then
+ZAK="${ZAK:-/Users/Michele/EMU/IIGS/out/ZakEnh}"
+if [ -d "$ZAK" ]; then
   echo "==> Zak: $ZAK"
   mkdir -p stage/ZAK
   for f in "$ZAK"/*; do
@@ -120,25 +115,53 @@ if [ -n "$ZAK" ] && [ -d "$ZAK" ]; then
   # (blob over the glasses stems). Staged LFL only.
   echo "==> Zak: punch costume 31 hat stem-blob"
   python3 "$ROOT/tools/patch_zak_arm.py" stage/ZAK "$ZAK"
+else
+  echo "==> no Zak folder at $ZAK - the disk goes out with /MM alone." >&2
+  echo "    Zak's files go in through ZAK=<folder>, not as the argument:" >&2
+  echo "    the argument fills /MM." >&2
 fi
 
 echo "==> Amiga SFX (no music), GSFX banks"
+AMIGA_2MG="${AMIGA_2MG:-$ROOT/../altri SCUMM/SCUMM-AMIGA.2mg}"
 rm -f stage/MM/SFX stage/MM/SFXI stage/MM/SFX[0-9]
-if [ -n "$AMIGA_2MG" ] && [ -f "$AMIGA_2MG" ]; then
+if [ -f "$AMIGA_2MG" ]; then
   python3 "$ROOT/tools/sfx_amiga.py" --from-2mg "$AMIGA_2MG" stage/MM/SFX
 else
-  echo "   no Amiga disk (set AMIGA_2MG in build.local.sh) — SFX omitted"
+  if [ -f "$ROOT/cache_sfx/SFXI" ]; then
+    echo "No Amiga disk at $AMIGA_2MG - using the SFX converted earlier (cache_sfx/)"
+    cp "$ROOT"/cache_sfx/SFX* stage/MM/
+  else
+    echo "No Amiga disk at $AMIGA_2MG and no cache_sfx/ - SFX omitted" >&2
+  fi
+fi
+# Whenever the SFX were produced, keep a copy for builds without the Amiga disk.
+if [ -f stage/MM/SFXI ]; then
+  mkdir -p "$ROOT/cache_sfx"
+  cp stage/MM/SFX* "$ROOT/cache_sfx/"
 fi
 
 echo "==> music omitted (SFX only)"
 rm -f stage/MM/MUSI stage/MM/MUS0 stage/MM/MUSQ
 
+echo "==> Finder icon"
+# Michele's icon, forks and all. The resource fork is what the Finder
+# really draws from, so it travels beside the data fork, and the line in
+# _FileInformation.txt is the one Cadius wrote when the icon came off
+# his disk - type, version and the Finder info bytes included.
 if [ -f "$ROOT/icons/SCUMM" ]; then
-  echo "==> Finder icon"
   mkdir -p stage/Icons
   cp "$ROOT/icons/SCUMM" stage/Icons/SCUMM
-  echo "SCUMM=Type(CA),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)" \
-    > stage/Icons/_FileInformation.txt
+  if [ -f "$ROOT/icons/SCUMM_ResourceFork.bin" ]; then
+    cp "$ROOT/icons/SCUMM_ResourceFork.bin" stage/Icons/SCUMM_ResourceFork.bin
+  fi
+  if [ -f "$ROOT/icons/SCUMM.info" ]; then
+    cp "$ROOT/icons/SCUMM.info" stage/Icons/_FileInformation.txt
+  else
+    echo "SCUMM=Type(CA),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)" \
+      > stage/Icons/_FileInformation.txt
+  fi
+else
+  echo "    no icons/SCUMM here - the disk goes out without it"
 fi
 
 # Put saved games back into the staged folders (MM and/or ZAK).
