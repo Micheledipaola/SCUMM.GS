@@ -66,6 +66,40 @@ class Partita:
         return self.mem.w(self.S['Vars'] + 2 * n)
 
     # --- running --------------------------------------------------------
+    def batte(self):
+        """One heartbeat (1/60 s): the task runs as a JSL, nested, and the
+        interrupted code is put back exactly as it was."""
+        cpu, mem, mondo = self.cpu, self.mem, self.mondo
+        mondo.in_hb = True
+        mondo.hb_next = cpu.cicli + 46000
+        if mem.w(mondo.hb + 4) == 0:                 # count: not armed
+            mondo.in_hb = False
+            return
+        mem.setw(mondo.hb + 4, 0)
+        sv = (cpu.a, cpu.x, cpu.y, cpu.s, cpu.d, cpu.dbr, cpu.pbr, cpu.pc,
+              cpu.p, cpu.e)
+        RIT = 0xFFF0
+        cpu.push8(0)                                 # bank of RIT (RTL)
+        cpu.push16((RIT - 1) & 0xFFFF)
+        cpu.pbr, cpu.pc = (mondo.hb + 8) >> 16, (mondo.hb + 8) & 0xFFFF
+        cpu.e = False
+        cpu.p &= ~0x30
+        n = 0
+        while not (cpu.pbr == 0 and cpu.pc == RIT) and n < 5_000_000:
+            pc = (cpu.pbr << 16) | cpu.pc
+            if pc == 0xE10000:
+                k = cpu.x
+                r = cpu.pop16()
+                b = cpu.pop8()
+                mondo.tool(k)
+                cpu.pbr, cpu.pc = b, (r + 1) & 0xFFFF
+            else:
+                cpu.passo()
+            n += 1
+        (cpu.a, cpu.x, cpu.y, cpu.s, cpu.d, cpu.dbr, cpu.pbr, cpu.pc,
+         cpu.p, cpu.e) = sv
+        mondo.in_hb = False
+
     def corri(self, passi=None, fino=None, guarda=None, ogni=20000):
         """Run until `fino` is true, or for that many steps.
 
@@ -91,6 +125,9 @@ class Partita:
                     mondo.gsos_call(mem.w(i), mem.l(i + 2))
                     cpu.pbr, cpu.pc = b, (r + 7) & 0xFFFF
                     continue
+                if getattr(mondo, 'hb', None) and cpu.cicli >= mondo.hb_next \
+                        and not getattr(mondo, 'in_hb', False):
+                    self.batte()
                 cpu.passo()
                 if cpu.passi % ogni == 0:
                     if guarda is not None:

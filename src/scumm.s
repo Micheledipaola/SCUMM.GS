@@ -166,6 +166,7 @@ SFXGEN           =     $0101          ; ch 0, generator 1, free-form (TN #37)
 SFXSTOP          =     $0002          ; bitmask: generator 1
 MUSVOL           =     140            ; DOC volume (0-255); 200 clipped 4 voices
 MUSIDX           =     256
+MUSTRK           =     40000                ; one Amiga track's events
 MUSSEQ           =     16384
 
 VAR_ROOM         =     4
@@ -295,7 +296,7 @@ Start            phk
                  _NewHandle
                  PullLong DPHandle
                  bcc   :dpok
-                 brl   NoMem
+                 jmp   NoMem
 :dpok            lda   DPHandle
                  sta   $00
                  lda   DPHandle+2
@@ -344,7 +345,7 @@ Start            phk
                  PushWord #$C010            ; locked, fixed, never crossing a bank
                  jsr   GetBlock
                  bcc   :rawok
-:nomem0          brl   NoMem
+:nomem0          jmp   NoMem
 :rawok           anop
                  lda   BlockLo
                  sta   zpRaw
@@ -404,7 +405,7 @@ Start            phk
                  PushWord #$C010
                  jsr   GetBlock
                  bcc   :memok
-:nomem           brl   NoMem
+:nomem           jmp   NoMem
 :memok           lda   BlockLo
                  sta   zpCost
                  lda   BlockHi
@@ -413,7 +414,7 @@ Start            phk
 *----- go --------------------------------------------------------------
                  jsr   ScegliGioco
                  bcc   :cartella
-                 brl   Shutdown
+                 jmp   Shutdown
 :cartella        jsr   Avvia320
                  jsr   ClearScreen
                  jsr   SetPalette
@@ -427,7 +428,7 @@ Start            phk
                  jsr   LoadIndex
                  bcc   :indexok
                  jsr   IdxMsg
-                 brl   DiskError
+                 jmp   DiskError
 :indexok         jsr   LoadSfx
                  jsr   LoadMus
                  jsr   ResetVM
@@ -479,6 +480,7 @@ MainLoop         jsr   Orologio
 :avanzook        sta   TickAcc
                  jsr   MoveCamera
                  jsr   AnimActors
+                 jsr   ActorSounds
                  jsr   MoveActors
 * Animation advances on the game clock - four ticks, fifteen frames a
 * second - but repairing the picture does not. An object animating under
@@ -986,7 +988,7 @@ ChiediUscita     _HideCursor
                  jsr   DrawRoom
 :niente          jsr   DrawMsg
                  rts
-:si              brl   Shutdown
+:si              jmp   Shutdown
 
 *=======================================================================
 * PausaGioco - SPACE, as in the DOS interpreter. The picture stays.
@@ -1155,6 +1157,7 @@ TastoGioco       sta   TastoQ
 
 * Apple-6 = F6 music on/off. Apple-7/9 music volume. Apple--/= SFX volume.
 * Carry set if the key was ours (do not send it to the scripts).
+* Each key answers with a short centred text on the sentence line.
 TastoAudio       lda   EvtModifiers
                  and   #$0100
                  beq   :no
@@ -1178,38 +1181,117 @@ TastoAudio       lda   EvtModifiers
                  eor   #1
                  sta   MusMute
                  jsr   MusApplyVol
+                 lda   #AudMOn
+                 ldx   MusMute
+                 beq   :tsay
+                 lda   #AudMOff
+:tsay            jsr   AudShow
 :ok              sec
                  rts
 :mdn             lda   MusLvl
-                 beq   :ok
+                 beq   :mdn2
                  dec   a
                  sta   MusLvl
-                 stz   MusMute
+:mdn2            stz   MusMute
                  jsr   MusApplyVol
+                 lda   #AudMDn
+                 jsr   AudShow
                  sec
                  rts
 :mup             lda   MusLvl
                  cmp   #8
-                 bcs   :ok
+                 bcs   :mup2
                  inc   a
                  sta   MusLvl
-                 stz   MusMute
+:mup2            stz   MusMute
                  jsr   MusApplyVol
+                 lda   #AudMUp
+                 jsr   AudShow
                  sec
                  rts
 :sdn             lda   SfxLvl
-                 beq   :ok
+                 beq   :sdn2
                  dec   a
                  sta   SfxLvl
+:sdn2            lda   #AudSDn
+                 jsr   AudShow
                  sec
                  rts
 :sup             lda   SfxLvl
                  cmp   #8
-                 bcs   :ok
+                 bcs   :sup2
                  inc   a
                  sta   SfxLvl
+:sup2            lda   #AudSUp
+                 jsr   AudShow
                  sec
                  rts
+
+* AudShow - A = address of a zero-ended string: it takes the place of the
+* sentence line for about a second and a half.
+AudShow          sta   AudPtr
+                 lda   #90
+                 sta   AudTimer
+                 jmp   DrawFrase
+
+* AudTick - run once per pass; when the text expires the sentence returns.
+AudTick          lda   AudTimer
+                 beq   :fine
+                 sec
+                 sbc   Elapsed
+                 bpl   :ancora
+                 lda   #0
+:ancora          sta   AudTimer
+                 bne   :fine
+                 jmp   DrawFrase
+:fine            rts
+
+* AudDraw - the centred text, called by DrawFraseReal while it lasts.
+AudDraw          lda   #COLSENTHI
+                 jsr   SetTextColor
+                 lda   AudPtr
+                 sta   zpStr
+                 lda   #^AudMOn
+                 sta   zpStr+2
+                 ldy   #0
+:len             lda   [zpStr],y
+                 and   #$00FF
+                 beq   :fine
+                 iny
+                 bra   :len
+:fine            sty   TmpW
+                 lda   #40
+                 sec
+                 sbc   TmpW
+                 bcs   :pos
+                 lda   #0
+:pos             lsr   a
+                 sta   TxtX
+                 lda   #40
+                 sta   TxtMax
+                 lda   #SENTTOP
+                 sta   TxtY
+                 inc   TxtBold
+                 jsr   DrawStrFino
+                 stz   TxtBold
+                 lda   #15
+                 jmp   SetTextColor
+
+AudMOn           asc   'Music on'
+                 hex   00
+AudMOff          asc   'Music off'
+                 hex   00
+AudMUp           asc   'Music volume up'
+                 hex   00
+AudMDn           asc   'Music volume down'
+                 hex   00
+AudSUp           asc   'Sound volume up'
+                 hex   00
+AudSDn           asc   'Sound volume down'
+                 hex   00
+AudPtr           ds    2
+TxtBold          ds    2
+AudTimer         ds    2
 
 *=======================================================================
 * DoClick - the player pressed: set up what the game expects to find
@@ -2206,6 +2288,10 @@ SuonoTick        lda   SndWaitT
                  stz   MusPend
                  jsr   PlayMus
 :nopend          jsr   MusTick
+                 lda   ZmHB                 ; the heartbeat runs the score;
+                 bne   :hb                  ; without it the main loop does
+                 jsr   ZmTick
+:hb              jsr   ZmKick
                  jsr   MusWatchEgo
                  rts
 
@@ -2390,8 +2476,50 @@ EStartId         cmp   #395
 :yes             sec
                  rts
 
-hStartSound      jsr   VOB1
+* ActorSounds - once per animation step. The first actor in the room whose
+* animation passed a sound command starts his sound, and every counter is
+* cleared (playActorSounds in the original: a walk cannot flood the queue).
+SndCnt           phx
+                 ldx   ActIdx
+                 inc   ActSndCnt,x
+                 plx
+                 rts
+
+ActorSounds      ldx   #0
+:lp              lda   ActSndCnt,x
+                 beq   :next
+                 lda   ActRoom,x
+                 cmp   CurRoom
+                 bne   :next
+                 lda   ActSnd,x
                  pha
+                 ldx   #0
+:clr             stz   ActSndCnt,x
+                 inx
+                 inx
+                 cpx   #NACT*2
+                 bcc   :clr
+                 pla
+                 beq   :fine
+                 jmp   StartSndA
+:next            inx
+                 inx
+                 cpx   #NACT*2
+                 bcc   :lp
+:fine            rts
+
+hStartSound      jsr   VOB1
+StartSndA        ldx   ZmOn
+                 beq   :vecchio
+                 pha
+                 jsr   ZmHas                ; Maniac: only the music is in
+                 bcs   :sfx                 ; ZMUS, its effects stay samples
+                 pla
+                 jsr   ZmStart
+                 stz   Esito
+                 rts
+:sfx             pla
+:vecchio         pha
                  jsr   TryMus
                  bcc   :mus
                  pla
@@ -2405,6 +2533,15 @@ hStartSound      jsr   VOB1
 * that timer would never move, so it counts seconds instead.
 hStartMusic      jsr   VOB1
                  pha
+                 ldx   ZmOn
+                 beq   :vecchio
+                 jsr   ZmStart
+                 bcs   :vecchio             ; no such sound: the stand-in timer
+                 pla
+                 stz   MusFinta
+                 stz   Esito
+                 rts
+:vecchio         lda   1,s
                  jsr   TryMus
                  bcc   :mus
                  pla
@@ -2452,7 +2589,12 @@ hStopSound       jsr   VOB1
                  bne   :play
                  stz   SndWaitT
                  stz   SndWaitId
-:play            pha
+:play            ldx   ZmOn
+                 beq   :nozm
+                 pha
+                 jsr   ZmStop
+                 pla
+:nozm            pha
                  jsr   TryStopMus
                  pla
                  cmp   PlayingId
@@ -2466,6 +2608,18 @@ hIsSound         jsr   FetchB
                  stx   DestVar
                  jsr   VOB1
                  sta   MusTmp
+                 ldx   ZmOn
+                 beq   :vecchio
+                 lda   MusTmp
+                 jsr   ZmHas
+                 bcs   :vecchio
+                 lda   MusTmp
+                 jsr   ZmIsRun
+                 ldx   DestVar
+                 sta   Vars,x
+                 stz   Esito
+                 rts
+:vecchio         anop
 * No sample in the GSFX index: not running. Zak's intro waits on
 * sound 81 (credits sting) which we do not pack; treating a stale
 * PlayingId as live froze ESC-from-the-office on a dead wait.
@@ -2537,7 +2691,78 @@ hIsSound         jsr   FetchB
 *=======================================================================
 LoadMus          stz   MusReady
                  stz   MusOn
-                 rts                   ; no score: Amiga samples and DOS PCjr both sounded wrong
+                 stz   ZmOn
+                 lda   SndOn
+                 bne   :doc
+                 rts
+:doc             lda   #SufMusI
+                 sta   zpStr
+                 lda   #^SufMusI
+                 sta   zpStr+2
+                 jsr   CopiaSuf
+                 jsr   OpenTail
+                 bcc   :aperto
+                 jmp   LoadZMus        ; no Amiga score on the disk: the PCjr one
+:aperto          PushLong #MUSIDX
+                 PushWord #$C000
+                 jsr   GetBlock
+                 bcc   :gotidx
+                 jmp   :chiudi
+:gotidx          lda   BlockLo
+                 sta   zpMusI
+                 sta   ReadBuf
+                 lda   BlockHi
+                 sta   zpMusI+2
+                 sta   ReadBuf+2
+                 lda   #MUSIDX
+                 sta   ReadCount
+                 stz   ReadCount+2
+                 jsr   ReadAndClose
+                 ldy   #0
+                 lda   [zpMusI],y
+                 cmp   #$4D47               ; 'G','M'
+                 bne   :no
+                 ldy   #2
+                 lda   [zpMusI],y
+                 cmp   #$5355               ; 'U','S'
+                 bne   :no
+* the samples: a 32K bank, page aligned, into DOC RAM $8000
+                 PushLong #32768+256
+                 PushWord #$C000
+                 jsr   GetBlock
+                 bcs   :no
+                 lda   BlockLo
+                 clc
+                 adc   #255
+                 and   #$FF00
+                 sta   MusPlayLo
+                 sta   ReadBuf
+                 lda   BlockHi
+                 sta   MusPlayHi
+                 sta   ReadBuf+2
+                 jsr   ApriMus0
+                 bcs   :no
+                 lda   #32768
+                 sta   ReadCount
+                 stz   ReadCount+2
+                 jsr   ReadAndClose
+                 jsr   DocCopyWaves
+* room for the track being played
+                 PushLong #MUSTRK
+                 PushWord #$C000
+                 jsr   GetBlock
+                 bcs   :no
+                 lda   BlockLo
+                 sta   zpMus
+                 lda   BlockHi
+                 sta   zpMus+2
+                 lda   #1
+                 sta   MusReady
+:no              rts
+:chiudi          jsl   $E100A8
+                 dw    CloseGS
+                 adrl  CloseParm
+                 rts
 
 ApriMus0         lda   #SufMus0
                  sta   zpStr
@@ -2699,6 +2924,7 @@ PlayMus          lda   MusReady
 :no              rts
 
 StopMus          stz   MusPend
+                 jsr   ZmStopAll
                  lda   MusOn
                  beq   :off
                  jsr   DocHaltAll
@@ -3112,7 +3338,10 @@ MusDocVol        lda   MusMute
 :z               lda   #0
                  rts
 
-MusApplyVol      lda   MusOn
+MusApplyVol      lda   ZmOn
+                 beq   :maniac
+                 jmp   ZmApplyVol
+:maniac          lda   MusOn
                  beq   :no
                  ldx   #0
 :lp              phx
@@ -3130,7 +3359,10 @@ MusApplyVol      lda   MusOn
                  bcc   :lp
 :no              rts
 
-MusDuck          lda   #1
+MusDuck          lda   ZmHB                 ; the heartbeat keeps the score going
+                 beq   :muta                ; through a load: no need to mute
+                 rts
+:muta            lda   #1
                  sta   MusLoadDuck
                  jmp   MusApplyVol          ; mute; do not halt (score stays in time)
 
@@ -3163,11 +3395,871 @@ MusUnduck        lda   MusLoadDuck
                  jmp   MusApplyVol
 
 *=======================================================================
+* V2 PCjr sounds - music and effects of a DOS V2 game (ZMUS)
+*=======================================================================
+* tools/zak_music.py runs the game's own sound scripts offline and writes
+* what the four voices do, 60 times a second, as a list of small events.
+* Here there is nothing to interpret: a due event moves one of DOC
+* oscillators 28-31 (three square waves and a noise). The queue is the
+* player's own: one sound at a time, a new one wins over the one playing
+* unless that has the higher priority, and a "restartable" sound that was
+* pushed out waits and starts again once the other is done.
+ZMHEAD           =     13830                ; 6 + 128 slots of 16 + 46 waves
+ZMBUF            =     52000                ; the longest sound is 49K
+ZMWAVES          =     2054                 ; where the waves start
+ZMPAGES          =     46
+ZMCACHE          =     24576                ; short sounds, kept after their first play
+ZMSMALL          =     1500                 ; the longest sound that is kept
+
+LoadZMus         stz   ZmOn
+                 stz   ZmCur
+                 stz   ZmNext
+                 lda   SndOn
+                 bne   :doc
+                 rts
+:doc             lda   #SufZMus
+                 sta   zpStr
+                 lda   #^SufZMus
+                 sta   zpStr+2
+                 jsr   CopiaSuf
+                 jsr   OpenTail
+                 bcc   :aperto
+                 rts                        ; this game has no ZMUS
+:aperto          PushLong #ZMHEAD
+                 PushWord #$C000
+                 jsr   GetBlock
+                 bcc   :gotidx
+                 jmp   :chiudi
+:gotidx          lda   BlockLo
+                 sta   zpMusI
+                 sta   ReadBuf
+                 lda   BlockHi
+                 sta   zpMusI+2
+                 sta   ReadBuf+2
+                 lda   #ZMHEAD
+                 sta   ReadCount
+                 stz   ReadCount+2
+                 jsr   ReadAndClose
+                 ldy   #0
+                 lda   [zpMusI],y
+                 cmp   #$4D5A               ; 'Z','M'
+                 bne   :no
+                 ldy   #2
+                 lda   [zpMusI],y
+                 cmp   #$5355               ; 'U','S'
+                 bne   :no
+                 PushLong #ZMBUF
+                 PushWord #$C000
+                 jsr   GetBlock
+                 bcs   :no
+                 lda   BlockLo
+                 sta   zpMus
+                 sta   ZmBufBase
+                 lda   BlockHi
+                 sta   zpMus+2
+                 sta   ZmBufBase+2
+* A cache for the short sounds (footsteps, clicks): playing one must not
+* mean opening the file again.
+                 stz   ZmCacheBase
+                 stz   ZmCacheBase+2
+                 PushLong #ZMCACHE
+                 PushWord #$C000
+                 jsr   GetBlock
+                 bcs   :nocache
+                 lda   BlockLo
+                 sta   ZmCacheBase
+                 lda   BlockHi
+                 sta   ZmCacheBase+2
+:nocache         lda   #2                   ; offset 0 means "not cached"
+                 sta   ZmCacheUsed
+                 ldx   #254
+:clr             stz   ZmCacheOff,x
+                 dex
+                 dex
+                 bpl   :clr
+                 jsr   ZmDocWaves
+                 lda   #1
+                 sta   ZmOn
+                 jsr   ZmHBOn
+:no              rts
+:chiudi          jsl   $E100A8
+                 dw    CloseGS
+                 adrl  CloseParm
+                 rts
+
+* The waves go to DOC RAM $8000, 46 pages: one is the square wave.
+ZmDocWaves       lda   zpMusI
+                 clc
+                 adc   #ZMWAVES
+                 sta   zpDoc
+                 lda   zpMusI+2
+                 adc   #0
+                 sta   zpDoc+2
+                 lda   #ZMPAGES
+                 sta   MusTmp
+                 php
+                 sei
+                 sep   #$20
+                 mx    %10
+:w               lda   >$E1C03C
+                 bmi   :w
+                 lda   #$4F                 ; RAM, no autoinc, vol 15
+                 sta   >$E1C03C
+:w2              lda   >$E1C03C
+                 bmi   :w2
+                 rep   #$20
+                 mx    %00
+                 lda   #$8000
+                 sta   >$E1C03E
+                 sep   #$30
+                 mx    %11
+:w3              lda   >$E1C03C
+                 bmi   :w3
+                 lda   #$6F                 ; RAM + autoinc
+                 sta   >$E1C03C
+                 ldx   MusTmp
+                 ldy   #$00
+:lp              lda   >$E1C03C
+                 bmi   :lp
+                 lda   [zpDoc],y
+                 sta   >$E1C03D
+                 iny
+                 bne   :lp
+                 inc   zpDoc+1
+                 dex
+                 bne   :lp
+:w4              lda   >$E1C03C
+                 bmi   :w4
+                 lda   #$0F                 ; DOC registers, vol 15
+                 sta   >$E1C03C
+                 plp
+                 mx    %00
+                 rts
+
+* ZmEntry - A = sound number, Y = its record in the table (16 bytes).
+ZmEntry          asl   a
+                 asl   a
+                 asl   a
+                 asl   a
+                 clc
+                 adc   #6
+                 tay
+                 rts
+
+* ZmHas - A = sound. Carry clear if ZMUS has it, set if not.
+ZmHas            cmp   #128
+                 bcs   :no
+                 cmp   #1
+                 bcc   :no
+                 jsr   ZmEntry
+                 iny
+                 iny
+                 iny
+                 iny
+                 lda   [zpMusI],y
+                 beq   :no
+                 clc
+                 rts
+:no              sec
+                 rts
+
+* ZmPrio / ZmRest - A = sound (0 = none), A = its priority / restartable.
+ZmPrio           beq   :nessuno
+                 jsr   ZmEntry
+                 iny
+                 iny
+                 iny
+                 iny
+                 iny
+                 iny
+                 iny
+                 iny
+                 lda   [zpMusI],y
+                 and   #$00FF
+:nessuno         rts
+
+ZmRest           beq   :nessuno
+                 jsr   ZmEntry
+                 iny
+                 iny
+                 iny
+                 iny
+                 iny
+                 iny
+                 iny
+                 iny
+                 iny
+                 lda   [zpMusI],y
+                 and   #$00FF
+:nessuno         rts
+
+* ZmStart - A = sound to start. Carry set: the game has no such sound.
+ZmStart          inc   ZmLock                 ; the beat leaves the score alone
+                 jsr   ZmStart0
+                 dec   ZmLock
+                 rts
+
+ZmStart0         sta   ZmNew
+                 sta   Vars+VO_LASTSND
+                 cmp   #1
+                 bcc   :niente              ; 0 is no sound
+                 cmp   #128
+                 bcs   :niente
+                 bra   :cerca
+:niente          sec
+                 rts
+:cerca           jsr   ZmEntry
+                 iny
+                 iny
+                 iny
+                 iny
+                 lda   [zpMusI],y           ; length: none = no such sound
+                 beq   :niente
+                 lda   ZmNew
+                 jsr   ZmPrio
+                 sta   ZmPrN
+                 lda   ZmNext
+                 jsr   ZmPrio
+                 sta   ZmPrX
+                 lda   ZmNew
+                 jsr   ZmRest
+                 sta   ZmReN
+                 lda   ZmCur
+                 jsr   ZmPrio
+                 sta   ZmPrC
+                 lda   ZmCur
+                 beq   :via                 ; nothing playing: this one goes
+                 lda   ZmPrC
+                 cmp   ZmPrN
+                 beq   :via
+                 bcs   :coda                ; what plays has the higher priority
+:via             lda   ZmCur
+                 sta   ZmOld
+                 lda   ZmNew
+                 jsr   ZmChain
+                 bcc   :partita
+                 rts                        ; the file would not give it
+:partita         lda   ZmOld                ; the one pushed out may come back
+                 sta   ZmNew
+                 lda   ZmPrC
+                 sta   ZmPrN
+                 lda   ZmOld
+                 jsr   ZmRest
+                 sta   ZmReN
+:coda            lda   ZmNew
+                 beq   :ok
+                 cmp   ZmCur
+                 beq   :ok
+                 lda   ZmReN
+                 beq   :ok
+                 lda   ZmNext
+                 beq   :metti
+                 lda   ZmPrX
+                 cmp   ZmPrN
+                 beq   :metti
+                 bcs   :ok                  ; what waits has the higher priority
+:metti           lda   ZmNew
+                 sta   ZmNext
+:ok              clc
+                 rts
+
+* ZmChain - A = sound: read its events and start at the top. Carry set if
+* the file would not give them.
+ZmChain          sta   ZmId
+                 jsr   ZmHaltAll
+                 lda   ZmId
+                 jsr   ZmEntry
+                 sty   ZmY
+                 lda   ZmId                 ; already in memory?
+                 asl   a
+                 tax
+                 lda   ZmCacheOff,x
+                 beq   :disco
+                 clc
+                 adc   ZmCacheBase
+                 sta   zpMus
+                 lda   ZmCacheBase+2
+                 adc   #0
+                 sta   zpMus+2
+                 jmp   :letto
+:disco           lda   ZmBufBase
+                 sta   zpMus
+                 lda   ZmBufBase+2
+                 sta   zpMus+2
+                 lda   #SufZMus
+                 sta   zpStr
+                 lda   #^SufZMus
+                 sta   zpStr+2
+                 jsr   CopiaSuf
+                 jsr   OpenTail
+                 bcc   :aperto
+                 stz   ZmCur
+                 sec
+                 rts
+:aperto          ldy   ZmY
+                 lda   [zpMusI],y           ; where its events are
+                 sta   MarkPos
+                 iny
+                 iny
+                 lda   [zpMusI],y
+                 sta   MarkPos+2
+                 iny
+                 iny
+                 lda   [zpMusI],y           ; how many bytes
+                 sta   ReadCount
+                 stz   ReadCount+2
+                 jsl   $E100A8
+                 dw    SetMarkGS
+                 adrl  MarkParm
+                 lda   zpMus
+                 sta   ReadBuf
+                 lda   zpMus+2
+                 sta   ReadBuf+2
+                 jsr   ReadAndClose
+                 jsr   ZmKeep
+:letto           ldy   ZmY
+                 tya
+                 clc
+                 adc   #10
+                 tay
+                 lda   [zpMusI],y
+                 sta   ZmLoopT              ; $FFFF: plays once
+                 iny
+                 iny
+                 lda   [zpMusI],y
+                 sta   ZmLoopOff
+                 stz   ZmPtr
+                 ldy   #0
+                 lda   [zpMus],y
+                 and   #$00FF
+                 sta   ZmWait
+                 lda   ZmId
+                 sta   ZmCur
+                 stz   ZmMiss               ; the score starts when it is loaded
+                 stz   Vars+VO_MUSTIMER     ; a new sound starts its timer at 0
+                 clc
+                 rts
+
+* ZmKeep - the sound just read (ZmId, ReadCount bytes at zpMus) goes into
+* the cache if it is short and there is room; zpMus then points there.
+ZmKeep           lda   ReadCount
+                 cmp   #ZMSMALL+1
+                 bcs   :fine
+                 lda   ZmCacheBase
+                 ora   ZmCacheBase+2
+                 beq   :fine
+                 lda   ReadCount
+                 inc   a
+                 and   #$FFFE
+                 sta   ZmTmp
+                 clc
+                 adc   ZmCacheUsed
+                 cmp   #ZMCACHE
+                 bcs   :fine
+                 lda   ZmCacheUsed
+                 clc
+                 adc   ZmCacheBase
+                 sta   zpDoc
+                 lda   ZmCacheBase+2
+                 adc   #0
+                 sta   zpDoc+2
+                 ldy   #0
+:cp              lda   [zpMus],y
+                 sta   [zpDoc],y
+                 iny
+                 iny
+                 cpy   ZmTmp
+                 bcc   :cp
+                 lda   ZmId
+                 asl   a
+                 tax
+                 lda   ZmCacheUsed
+                 sta   ZmCacheOff,x
+                 clc
+                 adc   ZmTmp
+                 sta   ZmCacheUsed
+                 lda   zpDoc
+                 sta   zpMus
+                 lda   zpDoc+2
+                 sta   zpMus+2
+:fine            rts
+
+ZmBufBase        ds    4
+ZmCacheBase      ds    4
+ZmCacheUsed      ds    2
+ZmCacheOff       ds    256
+
+* ZmStop - A = sound: stop it if it plays, forget it if it waits.
+ZmStop           inc   ZmLock
+                 jsr   ZmStop0
+                 dec   ZmLock
+                 rts
+
+ZmStop0          cmp   ZmNext
+                 bne   :cur
+                 stz   ZmNext
+:cur             cmp   ZmCur
+                 bne   :fine
+                 jmp   ZmFine
+:fine            rts
+
+ZmStopAll        inc   ZmLock
+                 lda   ZmOn
+                 beq   :fine
+                 stz   ZmNext
+                 stz   ZmCur
+                 jsr   ZmHaltAll
+:fine            dec   ZmLock
+                 rts
+
+* The playing sound is over: halt, and bring in the one that was waiting.
+ZmFine           jsr   ZmHaltAll
+                 stz   ZmCur
+                 lda   ZmNext
+                 beq   :fine
+                 lda   ZmInBeat             ; in the interrupt: no disk. The
+                 bne   :fine                ; main loop starts what waits
+                 stz   ZmNext
+                 jsr   ZmChain
+:fine            rts
+
+* ZmKick - main loop: a sound that was waiting starts once the one playing
+* has ended (the beat cannot read the file).
+ZmKick           lda   ZmOn
+                 beq   :fine
+                 lda   ZmCur
+                 bne   :fine
+                 lda   ZmNext
+                 beq   :fine
+                 inc   ZmLock
+                 lda   ZmNext
+                 stz   ZmNext
+                 jsr   ZmChain
+                 dec   ZmLock
+:fine            rts
+
+* ZmIsRun - A = sound. A = 1 if it plays or waits to.
+ZmIsRun          beq   :no
+                 cmp   ZmCur
+                 beq   :si
+                 cmp   ZmNext
+                 beq   :si
+:no              lda   #0
+                 rts
+:si              lda   #1
+                 rts
+
+* Once a frame: bring the clock on and fire what is due.
+ZmTick           lda   ZmOn
+                 beq   :out
+                 lda   ZmCur
+                 beq   :out
+                 lda   Elapsed
+                 beq   :out                 ; busy loop: do not eat the score
+                 cmp   #31
+                 bcc   :go
+                 lda   #30                  ; real time up to half a second
+:go              jmp   ZmAdv
+:out             rts
+
+* ZmAdv - A ticks have gone by: bring the score on and fire what is due.
+ZmAdv            sta   ZmTmp
+                 lda   ZmWait
+                 sec
+                 sbc   ZmTmp
+                 sta   ZmWait
+                 lda   #48
+                 sta   ZmBurst
+:more            lda   ZmWait
+                 beq   :due
+                 bpl   :rts
+:due             lda   ZmBurst
+                 beq   :rts
+                 dec   a
+                 sta   ZmBurst
+                 jsr   ZmEvent
+                 lda   ZmCur
+                 bne   :more
+:rts             rts
+
+* One event: 4 bytes, delta / voice+volume / frequency.
+ZmEvent          ldy   ZmPtr
+                 lda   [zpMus],y
+                 xba
+                 and   #$00FF
+                 sta   ZmCtl
+                 iny
+                 iny
+                 lda   [zpMus],y
+                 sta   ZmFo
+                 lda   ZmPtr
+                 clc
+                 adc   #4
+                 sta   ZmPtr
+                 lda   ZmCtl
+                 and   #7
+                 cmp   #5
+                 beq   :fine
+                 cmp   #4
+                 beq   :timer
+                 cmp   #6
+                 beq   :drum
+                 cmp   #3
+                 bcc   :voce
+                 beq   :voce
+                 bra   :prossimo            ; 7: a pause only
+:timer           lda   ZmFo
+                 sta   Vars+VO_MUSTIMER
+                 bra   :prossimo
+* 6: a drum hit on voice 3. The two top bits of the frequency say which
+* drum (1 hat, 2 snare, 3 kick): a sampled wave that plays once and stops.
+:drum            lda   ZmFo
+                 xba
+                 and   #$00C0
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 sta   ZmDrumC
+                 lda   ZmFo
+                 and   #$3FFF
+                 sta   ZmFo
+                 lda   ZmCtl
+                 and   #$FFF8
+                 ora   #3
+                 sta   ZmCtl
+                 jsr   ZmVoice
+                 stz   ZmDrumC
+                 bra   :prossimo
+:voce            jsr   ZmVoice
+:prossimo        ldy   ZmPtr
+                 lda   [zpMus],y
+                 and   #$00FF
+                 clc
+                 adc   ZmWait
+                 sta   ZmWait
+                 rts
+:fine            lda   ZmLoopT
+                 cmp   #$FFFF
+                 beq   :basta
+                 lda   ZmLoopOff            ; round again
+                 sta   ZmPtr
+                 bra   :prossimo
+:basta           jmp   ZmFine
+
+* ZmVoice - the event in ZmCtl / ZmFo is for voice (ZmCtl & 7).
+ZmVoice          lda   ZmCtl
+                 and   #7
+                 asl   a
+                 tax                        ; X = voice * 2
+                 lda   ZmCtl
+                 lsr   a
+                 lsr   a
+                 lsr   a
+                 and   #$000F
+                 sta   ZmStepN              ; volume step, 15 = silent
+                 cmp   #15
+                 bcs   :ferma
+                 lda   ZmFo
+                 beq   :ferma
+                 lda   ZmStepN
+                 sta   ZmStep,x
+                 stx   ZmX
+* which wave: the square for the tones, one of two noises for voice 3
+                 lda   #0
+                 cpx   #6
+                 bcs   :isnoise
+                 lda   ZmFo                 ; a tone: bit 15 of the frequency
+                 bpl   :nontri              ; says triangle (NES scores)
+                 and   #$7FFF
+                 sta   ZmFo
+                 lda   #45
+                 bra   :quale
+:nontri          lda   ZmCtl                ; the reed, or a square
+                 and   #$0080               ; whose harmonics fit the pitch
+                 beq   :banda
+                 lda   #41
+                 bra   :quale
+:banda           lda   ZmFo                 ; high notes alias on 256 bytes
+                 and   #$3FFF
+                 ldy   #0
+                 cmp   #5500
+                 bcc   :pg
+                 ldy   #42
+                 cmp   #11000
+                 bcc   :pg
+                 ldy   #43
+                 cmp   #18500
+                 bcc   :pg
+                 ldy   #44
+:pg              tya
+                 bra   :quale
+:isnoise         lda   ZmDrumC              ; a sampled drum?
+                 beq   :rumore
+                 asl   a
+                 asl   a
+                 asl   a
+                 clc
+                 adc   #9                   ; pages 17, 25, 33
+                 bra   :quale
+:rumore          lda   ZmCtl
+                 and   #$0080
+                 bne   :bianco
+                 lda   #9                   ; periodic noise: page 9
+                 bra   :quale
+:bianco          lda   #1                   ; white noise: page 1
+:quale           sta   ZmKindN
+                 phx
+                 jsr   ZmWrite
+                 plx
+                 rts
+:ferma           jmp   ZmHaltV
+
+ZmHaltAll        lda   ZmOn
+                 beq   :fine
+                 ldx   #0
+:lp              phx
+                 jsr   ZmHaltV
+                 plx
+                 inx
+                 inx
+                 cpx   #8
+                 bcc   :lp
+:fine            rts
+
+* ZmHaltV - X = voice * 2.
+ZmHaltV          lda   ZmRun,x
+                 beq   :fine
+                 stz   ZmRun,x
+                 lda   MusOscT,x
+                 clc
+                 adc   #$00A0
+                 tay
+                 lda   MusCtlT,x
+                 ora   #$0001
+                 tyx
+                 jsr   DocWr
+:fine            rts
+
+ZmDrumC         ds    2
+ZmLock           ds    2      ; main loop is changing the score
+ZmMiss           ds    2      ; beats skipped because of it
+ZmInBeat         ds    2
+ZmHB             ds    2      ; the heartbeat task is installed
+
+* The heartbeat task (Misc Tools, 60 Hz): the score must not wait for a
+* long screen or a disk read. The block: link, count, $A5A5, code.
+ZmHBBlock        adrl  0
+ZmHBCnt          dw    1
+                 dw    $A5A5
+                 php                        ; JSL from the tool: save it all
+                 rep   #$30
+                 pha
+                 phx
+                 phy
+                 phd
+                 phb
+                 phk
+                 plb
+                 lda   GameDP
+                 tcd
+                 lda   ZmOn
+                 beq   :out
+                 lda   ZmLock
+                 bne   :skip
+                 lda   ZmCur
+                 beq   :out
+                 lda   ZmMiss               ; the beats missed come too
+                 inc   a
+                 cmp   #31
+                 bcc   :ok
+                 lda   #30
+:ok              stz   ZmMiss
+                 ldx   #1
+                 stx   ZmInBeat
+                 jsr   ZmAdv
+                 stz   ZmInBeat
+                 bra   :out
+:skip            lda   ZmMiss
+                 cmp   #30
+                 bcs   :out
+                 inc   ZmMiss
+:out             lda   #1                   ; run again at the next beat
+                 sta   ZmHBCnt
+                 plb
+                 pld
+                 ply
+                 plx
+                 pla
+                 plp
+                 rtl
+
+* ZmHBOn - once the score is loaded: ask for the beat.
+ZmHBOn           lda   ZmHB
+                 bne   :fine
+                 stz   ZmLock
+                 stz   ZmMiss
+                 stz   ZmInBeat
+                 lda   #1
+                 sta   ZmHBCnt
+                 PushPtr ZmHBBlock
+                 _SetHeartBeat
+                 bcs   :fine
+                 lda   #1
+                 sta   ZmHB
+:fine            rts
+
+ZmHBOff          lda   ZmHB
+                 beq   :fine
+                 stz   ZmHB
+                 stz   ZmOn
+                 PushPtr ZmHBBlock
+                 _DelHeartBeat
+:fine            rts
+ZmVolTab         dw    140,111,88,70,56,44,35,28,22,18,14,11,9,7,6,0
+
+* ZmVolOf - A = volume step, A = what the DOC register gets.
+ZmVolOf          asl   a
+                 tax
+                 lda   ZmVolTab,x
+                 beq   :z
+                 pha
+                 lda   MusMute
+                 ora   MusLoadDuck
+                 bne   :muto
+                 pla
+                 ldx   MusLvl
+                 jmp   ScaleVol
+:muto            pla
+:z               lda   #0
+                 rts
+
+* ZmWrite - voice ZmX/2 gets frequency ZmFo, volume step ZmStepN and the
+* wave ZmKindN (page, from $8000). Only what changed is written once the
+* oscillator runs.
+ZmWrite          php
+                 sei
+                 ldx   ZmX
+                 lda   MusOscT,x
+                 sta   MusOsc
+                 lda   ZmFo
+                 and   #$00FF
+                 pha
+                 lda   MusOsc
+                 tax
+                 pla
+                 jsr   DocWr
+                 lda   MusOsc
+                 clc
+                 adc   #$0020
+                 tax
+                 lda   ZmFo
+                 xba
+                 and   #$00FF
+                 jsr   DocWr
+                 lda   ZmStepN
+                 jsr   ZmVolOf
+                 pha
+                 lda   MusOsc
+                 clc
+                 adc   #$0040
+                 tax
+                 pla
+                 jsr   DocWr
+                 ldx   ZmX
+                 lda   ZmRun,x
+                 beq   :parti
+                 lda   ZmKind,x             ; same wave: nothing else to do
+                 cmp   ZmKindN
+                 bne   :onda
+                 plp
+                 rts
+:parti           anop
+:onda            ldx   ZmX
+                 lda   ZmKindN
+                 sta   ZmKind,x
+                 lda   MusOsc
+                 clc
+                 adc   #$0080
+                 tax
+                 lda   ZmKindN
+                 clc
+                 adc   #$0080
+                 and   #$00FF
+                 jsr   DocWr
+                 lda   MusOsc
+                 clc
+                 adc   #$00C0
+                 tax
+                 lda   #0                   ; 256 bytes
+                 ldy   ZmKindN
+                 beq   :dimok
+                 cpy   #41
+                 bcs   :dimok
+                 lda   #$18                 ; 2048 bytes
+:dimok           jsr   DocWr
+                 ldx   ZmX
+                 lda   ZmRun,x
+                 bne   :gia
+                 lda   #1
+                 sta   ZmRun,x
+                 lda   MusOsc
+                 clc
+                 adc   #$00A0
+                 tax
+                 ldy   ZmX
+                 lda   MusCtlT,y
+                 jsr   DocWr
+:gia             plp
+                 rts
+
+* The sound level changed (Apple-7/9, mute): the voices sounding now.
+ZmApplyVol       inc   ZmLock
+                 jsr   ZmApplyVol0
+                 dec   ZmLock
+                 rts
+
+ZmApplyVol0      ldx   #0
+:lp              lda   ZmRun,x
+                 beq   :next
+                 phx
+                 lda   ZmStep,x
+                 jsr   ZmVolOf
+                 sta   ZmTmp
+                 plx
+                 phx
+                 lda   MusOscT,x
+                 clc
+                 adc   #$0040
+                 tax
+                 lda   ZmTmp
+                 jsr   DocWr
+                 plx
+:next            inx
+                 inx
+                 cpx   #8
+                 bcc   :lp
+                 rts
+
+*=======================================================================
 * ReadAndClose - read ReadCount bytes into ReadBuf and close
 *=======================================================================
 * GS/OS answers "end of file" when more bytes are asked for than there
 * are: that is normal, only the count that actually arrived matters.
-ReadAndClose     jsl   $E100A8
+ReadAndClose     lda   ZmOn                 ; while the disk works the score
+                 beq   :leggi               ; does not tick: hold the DOC
+                 lda   MusLoadDuck          ; silent, or the last notes drone
+                 pha
+                 jsr   MusDuck
+                 jsr   :leggi
+                 pla
+                 bne   :resta               ; already ducked by a room load
+                 stz   MusLoadDuck
+                 jmp   MusApplyVol
+:resta           rts
+:leggi           jsl   $E100A8
                  dw    ReadGS
                  adrl  ReadParm
                  jsl   $E100A8
@@ -5733,7 +6825,8 @@ Orologio         PushLong #0          ; room for the result
 *=======================================================================
 * MsgTick - the message on screen lasts a while, then goes away
 *=======================================================================
-MsgTick          lda   MsgTimer
+MsgTick          jsr   AudTick
+                 lda   MsgTimer
                  beq   :fine
                  sec
                  sbc   Elapsed
@@ -6442,7 +7535,9 @@ AnimUno          rep   #$30
 :okcam           ldx   ActIdx
                  lda   ActCost,x            ; this costume's commands
                  jsr   SlotCostume
-                 bcs   :fine
+                 bcc   :cok
+                 rts
+:cok
                  jsr   BaseCostume
                  ldy   #7
                  lda   [zpStr],y
@@ -6454,7 +7549,15 @@ AnimUno          rep   #$30
                  beq   :avanti
                  and   #$7FFF
                  sta   LimbJ                ; where he is now
-                 lda   CostPos,x
+                 lda   CmdOff               ; a command with bit 7 set makes
+                 clc                        ; a sound (his footsteps)
+                 adc   LimbJ
+                 tay
+                 lda   [zpStr],y
+                 and   #$0080
+                 beq   :nosnd
+                 jsr   SndCnt
+:nosnd           lda   CostPos,x
                  and   #$8000
                  sta   LimbExtra            ; the "do not loop" bit
                  bne   :unavolta
@@ -6485,7 +7588,10 @@ AnimUno          rep   #$30
                  lda   [zpStr],y
                  and   #$007F
                  sta   TmpW
-                 lda   CmdOff
+                 cmp   #$0078               ; command $78: sound as well
+                 bne   :n78
+                 jsr   SndCnt
+:n78             lda   CmdOff
                  clc
                  adc   LimbJ
                  tay
@@ -6497,7 +7603,8 @@ AnimUno          rep   #$30
 :avanti          inc   LimbNo
                  lda   LimbNo
                  cmp   #16
-                 bcc   :arto
+                 bcs   :fine
+                 jmp   :arto
 :fine            rts
 
 *=======================================================================
@@ -7201,6 +8308,35 @@ AssegnaCasella   ldx   ActIdx
                  beq   :niente
                  jsr   RimettiInBox
 :niente          rts
+
+* Maniac: a putActor one step off a flat box (the mummy in the bathtub
+* stands at y 48, the box is the line y 46) must still take that box's
+* mask or the curtain does not hide him. Only the box is kept, the
+* actor does not move, and only when it is really close.
+MmBoxVicina      ldx   ActIdx
+                 lda   ActRoom,x
+                 cmp   CurRoom
+                 bne   :no
+                 lda   NumBox
+                 beq   :no
+                 lda   ActX,x
+                 sta   BoxQx
+                 lda   ActY,x
+                 sta   BoxQy
+                 jsr   CasellaDelPunto
+                 cmp   #$FFFF
+                 bne   :no
+                 jsr   AvvicinaPunto
+                 lda   BoxScelta
+                 cmp   #$FFFF
+                 beq   :no
+                 lda   BoxBest
+                 cmp   #4
+                 bcs   :no
+                 ldx   ActIdx
+                 lda   BoxScelta
+                 sta   ActBox,x
+:no              rts
 
 *=======================================================================
 * ProssimaCasella - from BoxDa to BoxA, which box to cross next
@@ -9037,7 +10173,15 @@ hActorOps        jsr   VOB1
                  bra   :fine
 * The colour he speaks in. With actor zero it is the fallback one, which
 * the game sets at startup for everybody without one of their own.
-:voce            cmp   #5
+:voce            cmp   #1
+                 bne   :v5
+                 lda   ActNo                ; SO_SOUND: the actor's own sound
+                 jsr   ActIndex
+                 bcs   :fine
+                 lda   ActArg
+                 sta   ActSnd,x
+                 bra   :fine
+:v5              cmp   #5
                  bne   :fine
                  lda   ActNo
                  bne   :suo
@@ -9267,7 +10411,10 @@ hPutActor        jsr   VOB1
                  lda   ActArg2
                  sta   ActY,x
                  lda   IsZak
-                 beq   :mostra
+                 bne   :zakput
+                 jsr   MmBoxVicina
+                 bra   :mostra
+:zakput          ldx   ActIdx
                  lda   ActMoving,x          ; putActor stops a walk: the
                  beq   :giafermo            ; cycle has to stand too, or
                  stz   ActMoving,x          ; he keeps marching in place
@@ -13477,7 +14624,10 @@ DrawFrase        lda   UserIface
                  _ShowCursor
                  rts
 
-DrawFraseReal    lda   SentHot
+DrawFraseReal    lda   AudTimer
+                 beq   :normale
+                 jmp   AudDraw
+:normale         lda   SentHot
                  beq   :riposo
                  lda   #COLSENTHI
                  bra   :coloreok
@@ -15665,7 +16815,14 @@ DrawChar         and   #$007F
                  mx    %00
                  inc   FontIdx
 
+                 lda   TxtBold              ; bold: smear one pixel right
+                 beq   :nobold
                  lda   Riga8
+                 lsr   a
+                 ora   Riga8
+                 and   #$00FF
+                 sta   Riga8
+:nobold          lda   Riga8
                  and   #$00F0               ; the four left-hand pixels
                  lsr   a
                  lsr   a
@@ -16443,7 +17600,8 @@ DiskError        _InitCursor
                  bra   Shutdown
 
 NoMem            anop
-Shutdown         jsr   FermaSf
+Shutdown         jsr   ZmHBOff
+                 jsr   FermaSf
                  lda   SndOn
                  beq   :nosnd
                  PushWord #$FFFF
@@ -16541,9 +17699,13 @@ PathTail         ds    16
 SufSfxI          asc   'SFXI'
                  hex   00
 SufSfx           asc   'SFX'
+SufMusI          asc   'MUSI'
+                 hex   00
 SufMus0          asc   'MUS0'
                  hex   00
 SufMusQ          asc   'MUSQ'
+                 hex   00
+SufZMus          asc   'ZMUS'
                  hex   00
 SufSave          asc   'SAVE'
 SufL00           asc   'L00.LFL'
@@ -16983,8 +18145,14 @@ RiattivaScript   ldx   CurSlot              ; what the file left in my slot
                  lda   MioDelHi
                  sta   SlotDelHi,x
 
-* the one that was thrown out finds another slot, if it was a real one
+* the one that was thrown out finds another slot, if it was a real one -
+* unless it is the disk screen's own script as it was when the game was
+* saved: that copy would wait for ever in its menu loop and light up
+* whatever object a sentence names (the seat, the bus, the gate).
                  lda   AltroStat
+                 beq   :nessunaltro
+                 lda   AltroNum
+                 cmp   MioNum
                  beq   :nessunaltro
                  lda   AltroWhere
                  bne   :nessunaltro         ; only the global ones come back
@@ -17007,10 +18175,20 @@ RiattivaScript   ldx   CurSlot              ; what the file left in my slot
 :nessunaltro     stz   RiIdx                ; now read every code back in
 :lp              ldx   RiIdx
                  cpx   CurSlot
-                 beq   :prossimo
-                 lda   SlotStat,x
-                 beq   :prossimo
-                 lda   SlotWhere,x
+                 bne   :nonmio
+                 brl   :prossimo
+:nonmio          lda   SlotStat,x
+                 bne   :vivo
+                 brl   :prossimo
+:vivo            lda   SlotNum,x            ; a second copy of the disk screen
+                 cmp   MioNum               ; script is the one that was saved
+                 bne   :altro               ; in its menu loop: it must not
+                 lda   SlotWhere,x          ; come back to life
+                 bne   :altro
+                 lda   #MORTO
+                 sta   SlotStat,x
+                 brl   :prossimo
+:altro           lda   SlotWhere,x
                  beq   :dalpool
                  lda   #MORTO               ; room and object scripts go
                  sta   SlotStat,x
@@ -17821,6 +18999,8 @@ ActElev          ds    {25}*2
 ActCost          ds    {25}*2
 ActFace          ds    {25}*2
 ActFrame         ds    {25}*2
+ActSnd           ds    {25}*2
+ActSndCnt        ds    {25}*2
 ActVis           ds    {25}*2
 ActTalk          ds    {25}*2
 ActPal           ds    {25}*16            ; actorOps Color remap
@@ -17973,6 +19153,31 @@ MusWSize         ds    2
 MusOsc           ds    2
 MusCh            ds    2
 MusMute          ds    2
+ZmOn             ds    2      ; a ZMUS file is loaded: sounds go through it
+ZmCur            ds    2      ; the sound playing (0 = none)
+ZmNext           ds    2      ; the sound waiting to start once it is done
+ZmWait           ds    2      ; frames to the next event (signed)
+ZmPtr            ds    2      ; the next event, in the events buffer
+ZmLoopT          ds    2      ; $FFFF = plays once
+ZmLoopOff        ds    2      ; where the loop starts
+ZmCtl            ds    2
+ZmFo             ds    2
+ZmBurst          ds    2
+ZmTmp            ds    2
+ZmId             ds    2
+ZmY              ds    2
+ZmNew            ds    2
+ZmOld            ds    2
+ZmPrN            ds    2
+ZmPrX            ds    2
+ZmPrC            ds    2
+ZmReN            ds    2
+ZmStepN          ds    2
+ZmKindN          ds    2
+ZmX              ds    2
+ZmRun            ds    8      ; per voice: the oscillator is going
+ZmStep           ds    8      ; per voice: its volume step
+ZmKind           ds    8      ; per voice: which wave it has
 MusLvl           ds    2
 MusEvTick        ds    2
 VolTmp           ds    2

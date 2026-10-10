@@ -115,6 +115,9 @@ if [ -d "$ZAK" ]; then
   # (blob over the glasses stems). Staged LFL only.
   echo "==> Zak: punch costume 31 hat stem-blob"
   python3 "$ROOT/tools/patch_zak_arm.py" stage/ZAK "$ZAK"
+  # The game's own PCjr sound resources, run offline into DOC events.
+  echo "==> Zak: sounds (ZMUS)"
+  python3 "$ROOT/tools/zak_music.py" "$ZAK" stage/ZAK/ZMUS | tail -1
 else
   echo "==> no Zak folder at $ZAK - the disk goes out with /MM alone." >&2
   echo "    Zak's files go in through ZAK=<folder>, not as the argument:" >&2
@@ -140,8 +143,28 @@ if [ -f stage/MM/SFXI ]; then
   cp stage/MM/SFX* "$ROOT/cache_sfx/"
 fi
 
-echo "==> music omitted (SFX only)"
-rm -f stage/MM/MUSI stage/MM/MUS0 stage/MM/MUSQ
+# Maniac's music, best source first: the NES scores (a ROM in rom/, or the
+# ZMUS made from it earlier), then the Amiga scores (data-amiga), then the
+# game's own PCjr score. MM_MUSIC=amiga skips the NES.
+echo "==> Maniac: music"
+rm -f stage/MM/MUSI stage/MM/MUS0 stage/MM/MUSQ stage/MM/ZMUS
+NES_ROM="${NES_ROM:-$ROOT/rom/Maniac_Mansion_Italy.nes}"
+mkdir -p "$ROOT/music" "$ROOT/cache_nes" "$ROOT/cache_mus"
+[ -f "$ROOT/music/map.txt" ] || printf 'intro 58\namiga50 50\namiga58 58\n' > "$ROOT/music/map.txt"
+if [ "${MM_MUSIC:-nes}" != "amiga" ] && [ -f "$NES_ROM" ]; then
+  python3 "$ROOT/tools/nes_music.py" "$NES_ROM" stage/MM/ZMUS "$SRC" | tail -1
+  cp stage/MM/ZMUS "$ROOT/cache_nes/ZMUS"
+elif [ "${MM_MUSIC:-nes}" != "amiga" ] && [ -f "$ROOT/cache_nes/ZMUS" ]; then
+  cp "$ROOT/cache_nes/ZMUS" stage/MM/ZMUS
+elif [ -d "$ROOT/data-amiga" ]; then
+  python3 "$ROOT/tools/pack_music.py" --amiga-2mg "$ROOT/data-amiga" --map "$ROOT/music/map.txt" --out stage/MM/MUS | tail -3
+  cp stage/MM/MUS[I0Q] "$ROOT/cache_mus/"
+elif [ -f "$ROOT/cache_mus/MUSI" ]; then
+  cp "$ROOT"/cache_mus/MUS* stage/MM/
+else
+  echo "no Amiga/NES music available - Maniac plays the PCjr score" >&2
+  python3 "$ROOT/tools/zak_music.py" "$SRC" stage/MM/ZMUS --only 50,55,58,70 --plain | tail -1
+fi
 
 echo "==> Finder icon"
 # Michele's icon, forks and all. The resource fork is what the Finder
@@ -182,12 +205,12 @@ fi
 
 echo "SCUMM=Type(B3),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)" \
   > stage/_FileInformation.txt
-for f in stage/MM/L??.LFL stage/MM/SFX* stage/MM/MUS* stage/MM/SAVE[0-9]; do
+for f in stage/MM/L??.LFL stage/MM/SFX* stage/MM/MUS* stage/MM/ZMUS stage/MM/SAVE[0-9]; do
   [ -f "$f" ] || continue
   echo "$(basename "$f")=Type(06),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)"
 done > stage/MM/_FileInformation.txt
 if [ -d stage/ZAK ]; then
-  for f in stage/ZAK/L??.LFL stage/ZAK/SAVE[0-9]; do
+  for f in stage/ZAK/L??.LFL stage/ZAK/ZMUS stage/ZAK/SAVE[0-9]; do
     [ -f "$f" ] || continue
     echo "$(basename "$f")=Type(06),AuxType(0000),VersionCreate(70),MinVersion(BE),Access(E3)"
   done > stage/ZAK/_FileInformation.txt

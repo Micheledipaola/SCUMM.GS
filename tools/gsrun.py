@@ -221,6 +221,16 @@ class Mondo:
     # --- toolbox ----------------------------------------------------------
     def tool(self, numero):
         c = self.cpu
+        if numero == 0x1203:                        # SetHeartBeat(ptr)
+            self.hb = self.pop32()
+            self.hb_next = c.cicli + 46000
+            c.p &= ~0x01
+            return
+        if numero == 0x1303:                        # DelHeartBeat(ptr)
+            self.pop32()
+            self.hb = None
+            c.p &= ~0x01
+            return
         if numero in (0x0201, 0x0203, 0x0301, 0x0303, 0x0304, 0x0306,
                       0xCA04, 0x9004, 0x9104, 0x9204,
                       0x0212, 0x0312, 0x030E, 0x030F, 0x0310, 0x0314,
@@ -364,6 +374,16 @@ class Mondo:
             # few frames, and the game behaved unlike the real machine.
             self.tick = self.cpu.passi // self.passi_per_tick
             self.metti32(self.tick)
+            return
+        if numero == 0x0E08:                        # FFStartSound(gen, block)
+            self.pop32(), self.pop16()
+            return
+        if numero == 0x0F08:                        # FFStopSound(gen)
+            self.pop16()
+            return
+        if numero == 0x1408:                        # FFSoundDoneStatus(gen)
+            self.pop16()
+            self.metti16(0)
             return
         raise RuntimeError(f"tool ${numero:04X} non previsto {self.cpu.dove()}")
 
