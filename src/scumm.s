@@ -3404,10 +3404,10 @@ MusUnduck        lda   MusLoadDuck
 * player's own: one sound at a time, a new one wins over the one playing
 * unless that has the higher priority, and a "restartable" sound that was
 * pushed out waits and starts again once the other is done.
-ZMHEAD           =     13830                ; 6 + 128 slots of 16 + 46 waves
+ZMHEAD           =     14342                ; 6 + 128 slots of 16 + 48 waves
 ZMBUF            =     52000                ; the longest sound is 49K
 ZMWAVES          =     2054                 ; where the waves start
-ZMPAGES          =     46
+ZMPAGES          =     48
 ZMCACHE          =     24576                ; short sounds, kept after their first play
 ZMSMALL          =     1500                 ; the longest sound that is kept
 
@@ -3975,25 +3975,25 @@ ZmVoice          lda   ZmCtl
                  bpl   :nontri              ; says triangle (NES scores)
                  and   #$7FFF
                  sta   ZmFo
-                 lda   #45
+                 lda   #5
                  bra   :quale
 :nontri          lda   ZmCtl                ; the reed, or a square
                  and   #$0080               ; whose harmonics fit the pitch
                  beq   :banda
-                 lda   #41
+                 lda   #1
                  bra   :quale
 :banda           lda   ZmFo                 ; high notes alias on 256 bytes
                  and   #$3FFF
                  ldy   #0
-                 cmp   #5500
+                 cmp   #4000
                  bcc   :pg
-                 ldy   #42
-                 cmp   #11000
+                 ldy   #2
+                 cmp   #8000
                  bcc   :pg
-                 ldy   #43
-                 cmp   #18500
+                 ldy   #3
+                 cmp   #14000
                  bcc   :pg
-                 ldy   #44
+                 ldy   #4
 :pg              tya
                  bra   :quale
 :isnoise         lda   ZmDrumC              ; a sampled drum?
@@ -4002,14 +4002,14 @@ ZmVoice          lda   ZmCtl
                  asl   a
                  asl   a
                  clc
-                 adc   #9                   ; pages 17, 25, 33
+                 adc   #16                  ; pages 24, 32, 40
                  bra   :quale
 :rumore          lda   ZmCtl
                  and   #$0080
                  bne   :bianco
-                 lda   #9                   ; periodic noise: page 9
+                 lda   #16                  ; periodic noise: page 16
                  bra   :quale
-:bianco          lda   #1                   ; white noise: page 1
+:bianco          lda   #8                   ; white noise: page 8
 :quale           sta   ZmKindN
                  phx
                  jsr   ZmWrite
@@ -4048,12 +4048,13 @@ ZmLock           ds    2      ; main loop is changing the score
 ZmMiss           ds    2      ; beats skipped because of it
 ZmInBeat         ds    2
 ZmHB             ds    2      ; the heartbeat task is installed
+ZmHBErr          ds    2      ; why _SetHeartBeat refused, if it did
 
 * The heartbeat task (Misc Tools, 60 Hz): the score must not wait for a
-* long screen or a disk read. The block: link, count, $A5A5, code.
+* long screen or a disk read. The block: link, count, $A55A, code.
 ZmHBBlock        adrl  0
 ZmHBCnt          dw    1
-                 dw    $A5A5
+                 dw    $A55A              ; the signature the ROM wants
                  php                        ; JSL from the tool: save it all
                  rep   #$30
                  pha
@@ -4104,18 +4105,32 @@ ZmHBOn           lda   ZmHB
                  stz   ZmInBeat
                  lda   #1
                  sta   ZmHBCnt
-                 PushPtr ZmHBBlock
+                 lda   #0                   ; long pointer: bank word, then offset
+                 sep   #$20
+                 phk
+                 pla
+                 rep   #$20
+                 pha
+                 pea   ZmHBBlock
                  _SetHeartBeat
-                 bcs   :fine
-                 lda   #1
+                 bcc   :ok
+                 sta   ZmHBErr
+                 rts
+:ok              lda   #1
                  sta   ZmHB
-:fine            rts
+                 rts
 
 ZmHBOff          lda   ZmHB
                  beq   :fine
                  stz   ZmHB
                  stz   ZmOn
-                 PushPtr ZmHBBlock
+                 lda   #0                   ; long pointer: bank word, then offset
+                 sep   #$20
+                 phk
+                 pla
+                 rep   #$20
+                 pha
+                 pea   ZmHBBlock
                  _DelHeartBeat
 :fine            rts
 ZmVolTab         dw    140,111,88,70,56,44,35,28,22,18,14,11,9,7,6,0
@@ -4195,9 +4210,8 @@ ZmWrite          php
                  tax
                  lda   #0                   ; 256 bytes
                  ldy   ZmKindN
-                 beq   :dimok
-                 cpy   #41
-                 bcs   :dimok
+                 cpy   #8
+                 bcc   :dimok
                  lda   #$18                 ; 2048 bytes
 :dimok           jsr   DocWr
                  ldx   ZmX

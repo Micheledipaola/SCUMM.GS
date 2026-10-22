@@ -462,6 +462,16 @@ def lfsr_wave(feedback, n=2048, amp=44, alpha=0.28):
     return bytes(out)
 
 
+def soft_square(harmonics=4, amp=84, rolloff=1.6):
+    """A mellower lead: odd harmonics falling as 1/k**rolloff, so the
+    top end is a hint, not a sting."""
+    vals = [sum(math.sin(2 * math.pi * k * i / 256) / k ** rolloff
+                for k in range(1, 2 * harmonics, 2)) for i in range(256)]
+    peak = max(abs(v) for v in vals)
+    return bytes(max(1, min(255, int(round(128 + amp * v / peak))))
+                 for v in vals)
+
+
 def square_wave(harmonics=5, amp=96):
     """A band-limited square (odd harmonics only, 1/n weights): the same
     note as the PCjr's pulse, minus the buzzing top end. With few
@@ -500,11 +510,13 @@ def drum_wave(kind, n=2048):
     t = np.arange(n) / DRUM_HZ[kind]
     nz = rng.uniform(-1, 1, n)
     if kind == 1:                                # closed hat: bright, brief
-        x = np.diff(nz, prepend=0) * np.exp(-t / 0.030)
+        x = 0.7 * np.diff(np.convolve(nz, np.ones(2) / 2, mode='same'), prepend=0) * np.exp(-t / 0.025)
     elif kind == 2:                              # snare: body plus a rattle
-        lp = np.convolve(nz, np.ones(3) / 3, mode='same')
-        x = (0.8 * np.diff(lp, prepend=0) * np.exp(-t / 0.060)
-             + 0.7 * np.sin(2 * np.pi * 185 * t) * np.exp(-t / 0.045))
+        lp = np.convolve(nz, np.ones(5) / 5, mode='same')
+        f = 170 + 90 * np.exp(-t / 0.012)
+        ph = 2 * np.pi * np.cumsum(f) / DRUM_HZ[kind]
+        x = (0.45 * lp * np.exp(-t / 0.050)
+             + 1.0 * np.sin(ph) * np.exp(-t / 0.055))
     else:                                        # kick: a falling sine
         f = 45 + 95 * np.exp(-t / 0.030)
         ph = 2 * np.pi * np.cumsum(f) / DRUM_HZ[kind]
@@ -534,12 +546,16 @@ def buzz_wave(harmonics=12):
 
 
 def wave_block():
-    """46 pages for DOC RAM $8000: square (up to 9 harmonics), white noise,
-    periodic noise, hat, snare, kick, the kazoo's reed, then squares with
-    3 and 2 harmonics a sine for the highest notes and a triangle (the NES scores)."""
-    return (square_wave(5) + lfsr_wave(FB_WNOISE) + lfsr_wave(FB_PNOISE)
-            + drum_wave(1) + drum_wave(2) + drum_wave(3) + buzz_wave()
-            + square_wave(3) + square_wave(2) + sine_wave() + triangle_wave())
+    """48 pages for DOC RAM $8000. The 2048-byte tables must sit on an
+    8-page boundary (the DOC masks the page by the table size), so the
+    256-byte waves come first: 0 soft lead square, 1 reed, 2 and 3 squares
+    with 3 and 2 harmonics, 4 sine, 5 triangle, 6-7 unused; then 8 white
+    noise, 16 periodic noise, 24 hat, 32 snare, 40 kick."""
+    return (soft_square(4) + buzz_wave() + soft_square(3, 84, 1.3)
+            + soft_square(2, 90, 1.0) + sine_wave() + triangle_wave()
+            + bytes([128]) * 512
+            + lfsr_wave(FB_WNOISE) + lfsr_wave(FB_PNOISE)
+            + drum_wave(1) + drum_wave(2) + drum_wave(3))
 
 
 def drum_events(ev):
