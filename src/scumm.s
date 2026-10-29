@@ -17417,6 +17417,8 @@ CredDisegna      lda   #15
                  jsr   CredRiga
                  lda   #MsgCred2
                  jsr   CredRiga
+                 lda   #MsgCred3
+                 jsr   CredRiga
                  lda   #15
                  jmp   SetTextColor
 
@@ -17858,7 +17860,9 @@ MsgMusica        asc   '........................'
                  hex   00
 MsgCred1         asc   'SCUMMv2 interpreter for Apple IIGS'
                  dfb   0
-MsgCred2         asc   'by Michele Di Paola'
+MsgCred2         asc   'created by Michele Di Paola'
+                 dfb   0
+MsgCred3         asc   'using Claude AI'   ; one line of 40 columns is too short
                  dfb   0
 MsgIdxV1a        asc   'These are SCUMM V1 game files:'
                  dfb   0
