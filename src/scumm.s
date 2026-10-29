@@ -8882,9 +8882,9 @@ RiscriviCred     ldx   #0
                  sta   zpStr+2
                  jmp   CopiaMsg
 
-:nomi            lda   #MsgMusica
+:nomi            lda   #MsgPuntini          ; Maniac keeps its dots
                  sta   zpStr
-                 lda   #^MsgMusica
+                 lda   #^MsgPuntini
                  sta   zpStr+2
                  jmp   CopiaMsg
 
@@ -14437,9 +14437,23 @@ PatchCredVerb    lda   zpStr
                  and   #$007F
                  cmp   #'y'
                  beq   :nomi
-:av              inx
+:av              lda   VerbName,x           ; "Music and Sound Effects by":
+                 and   #$007F               ; the "by" goes, nobody is
+                 cmp   #'M'                 ; credited on that line now
+                 bne   :av2
+                 lda   VerbName+1,x
+                 and   #$007F
+                 cmp   #'u'
+                 bne   :av2
+                 lda   VerbName+2,x
+                 and   #$007F
+                 cmp   #'s'
+                 beq   :music
+:av2             inx
                  bra   :c1
 :no              bra   :esci
+:music           lda   #MsgMusic
+                 bra   :copia
 :ibm             lda   #MsgIIGS
                  bra   :copia
 :nomi            lda   #MsgMusica
@@ -17854,7 +17868,11 @@ MsgBad           asc   'unknown opcode: '
                  dfb   0
 MsgIIGS          asc   'IIGS porting by Michele Di Paola'
                  hex   00
-MsgMusica        asc   '........................'
+MsgMusica        asc   'Ported from DOS Version'
+                 hex   00
+MsgPuntini       asc   '........................'
+                 hex   00
+MsgMusic         asc   'Music and Sound Effects'
                  hex   00
 MsgCred1         asc   'SCUMMv2 interpreter for Apple IIGS'
                  dfb   0
