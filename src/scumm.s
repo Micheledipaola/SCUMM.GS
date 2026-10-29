@@ -14483,13 +14483,7 @@ PatchCredVerb    lda   zpStr
                  sta   VerbName,x
                  rep   #$20
                  mx    %00
-                 lda   NameBase             ; dots: centre on the 40-wide line
-                 tax
-                 lda   VerbName,x
-                 and   #$007F
-                 cmp   #'.'
-                 bne   :esci
-                 lda   #40
+                 lda   #40                  ; every line we wrote: centre it
                  sec
                  sbc   NameLen
                  lsr   a
