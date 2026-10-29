@@ -329,9 +329,9 @@ on Maniac” as a side effect of a Zak fix until there is an explicit MM pass.
 
 ## Credits and licence
 
-Written with Claude and Grok for Michele Di Paola, who directs the port, tests
-every build on real hardware and on emulator (GSplus), and found most of the bugs
-described in the comments.
+Written by Claude and Grok for Michele Di Paola, who directs the port, tests
+every build on real hardware and on emulator (GSplus - GS squared), and found most of 
+the bugs described in the comments.
 
 The file formats and the opcode table were worked out from
 **[ScummVM](https://www.scummvm.org/)** and **scummvm-tools** (`descumm`), which are
