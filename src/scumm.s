@@ -4099,7 +4099,9 @@ ZmHBCnt          dw    1
 
 * ZmHBOn - once the score is loaded: ask for the beat.
 ZmHBOn           lda   ZmHB
-                 bne   :fine
+                 beq   :go
+                 rts
+:go              anop
                  stz   ZmLock
                  stz   ZmMiss
                  stz   ZmInBeat
